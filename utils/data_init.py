@@ -34,13 +34,13 @@ import numpy as np
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim2_1_09966/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim2_1_pfofflinefit/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/deep_testing0/"
-# ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_allfp/"
+ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_allfp/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_thpoff/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_nodeltam8/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_theoff/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_hyptaroff/"
 # ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_hyptaroff_hthetacentraloff/"
-ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_alloffsets/"
+# ROOTfiles_DIR= "/media/gvill/Gema's T7/ROOTfiles/heepcoin_deltaoptim3_alloffsets/"
 
 
 # location of SIMC root files
@@ -85,11 +85,16 @@ def get_list(db_res, index = 0):
     
 def get_eff_norm(run,run_type='coin'):
     if run_type == 'coin':
-        h_teff, p_teff, lt =\
+        # normalization factors per run
+        h_teff, p_teff, lt, tgtBoil=\
             db.retrieve('deuteron_db.db', 
-                        'HMS_TrkEff, SHMS_TrkEff, T6_tLT', 
-                        'RUN_LIST', where = f"run=\'{run}\'")[0]
-        norm = h_teff*p_teff*lt
+                        'HMS_TrkEff, SHMS_TrkEff, tLT, tgtBoil_corr', 
+                        'RUN_LIST_UPDATED', where = f"run=\'{run}\'")[0]
+        
+        # proton transmission factor
+        pTr = 0.9320 # see PA study
+        
+        norm = h_teff*p_teff*lt*tgtBoil*pTr
     elif run_type == 'singles':
         p_teff, lt =\
             db.retrieve('deuteron_db.db', 
@@ -102,26 +107,29 @@ def get_eff_norm(run,run_type='coin'):
     # print(h_teff,p_teff,lt)    
     return norm
 
-def get_charge_norm(run):
+def get_charge_norm(run,curr='BCM4A'):
     q =\
         get_list(db.retrieve('deuteron_db.db', 
-                    'BCM4A_charge', 
-                    'RUN_LIST', where = f"run=\'{run}\'"))
+                    f'{curr}_charge', 
+                    'RUN_LIST_UPDATED', where = f"run=\'{run}\'"))
     
     return q
 
 def calc_weights(simc_branches):
     w = simc_branches['Weight']
     nf = simc_branches['Normfac']
+    pr = simc_branches['probabs']
+    # pr = 1
     nevt = w.size
     
-    return w*nf/nevt
+    return w*nf*pr/nevt
 
 def calc_weights_PS(simc_branches):
     nf = simc_branches['Normfac']
+    jac = simc_branches['Jacobian_corr']
     nevt = nf.size
     
-    return nf/nevt  
+    return nf*jac/nevt  
 
 def get_coinTimeOffset(coinTime):
 

@@ -107,9 +107,6 @@ class read_npz:
         
     def __getitem__(self, x):
         return self.data[x]
-    
-
-        
 
 #%% Class for handlung root trees
 class root_tree: 

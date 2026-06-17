@@ -6,42 +6,25 @@ Created on Wed Jan 22 12:35:44 2025
 @author: gvill
 
 Extract Deuteron Cross Sections (PRELIMINARY)
+
+This code utilizes modules to load data, apply cuts, then produce histograms
+and manipulates them to get cross sections, then saves all relevant plots to
+a pickle file
+
 """
 
 import data_init as D
 import LT.box as B
 import cut_handler as C
+import load_data_init as L
+import database_operations as db
 
+import pickle as P
 import numpy as np
-from matplotlib import colormaps as cmp
-import matplotlib.lines as mlines
+
+rtd = 180/np.pi
 
 #%% helper functions
-
-def pptxify(t='',x='',y='',fsize=24): 
-    B.pl.tick_params('both',labelsize='x-large')
-    B.pl.title(t, fontdict={'fontsize':fsize})
-    B.pl.xlabel(x, fontdict={'fontsize':fsize})
-    B.pl.ylabel(y, fontdict={'fontsize':fsize})
-    fig = B.pl.gcf()
-    fig.set_size_inches(10,10)
-    #B.pl.legend(fontsize = fsize)
-    
-def fit_legend(fit_params):
-    ax = B.pl.gca()
-    handles, labels = ax.get_legend_handles_labels()
-    for par in fit_params:
-        fit_info = (
-               f"A = {par['A'].value:.2f} $\pm$ {par['A'].err:.2f}\n"
-               f"$\mu$ = {par['mean'].value:.4e} $\pm$ {par['mean'].err:.4e}\n"
-               f"$\sigma$ = {par['sigma'].value:.4e} $\pm$ {par['sigma'].err:.4e}\n"
-           )
-        handles.append(mlines.Line2D([], [], color='None', label=fit_info))
-        labels.append(fit_info)
-    
-    #ax.legend(handles=handles, labels=labels)
-    return (handles, labels)    
-
 def set_inf(inpt,set_inf_to=0.):
     is_inf = np.where(inpt == np.inf)
     for i in is_inf[0]:
@@ -49,293 +32,1333 @@ def set_inf(inpt,set_inf_to=0.):
     print(f'Set {is_inf[0].size} inf to {set_inf_to}\n')
     return
 
+def save_histos(d,h):
+    hist = h.histos_2D
+    filename = f'./yield_n_xsec/average_kin/{d.setting}_{d.simc_type}_2Dhistos_avgKin.pcl'
+    with open(filename, 'wb') as f:
+        P.dump(hist,f)
+    print(f'Saved {filename}\n')
 #%% Analysis Functions
-
-###
-# function to normalize histograms by efficiencies and getting the total
-# charge of the runs given, should I keep the charge per run as well?
-###
-
-def normalize_histos(histos,many=[]):
-    if many:
-        charge = []
-        h_enorm = {}
-        for m in many:
-            h = histos[m]
-            enorm = D.get_eff_norm(m)
-            charge.append(D.get_charge_norm(m))
-            
-            # print('h.bin_content[0] = ',h.bin_content[0])
-            h.bin_content = enorm*h.bin_content
-            # print('enorm = ',enorm)
-            # print('h.bin_content[0] = ',h.bin_content[0])
-            h_enorm[m] = h
-            # print('h_enorm[m].bin_content[0] = ',h_enorm[m].bin_content[0])
-            # print('h_enorm[m].y_bin_center = ',h_enorm[m].y_bin_center)
-            
-        charge_tot = np.sum(np.array(charge))
-        return charge_tot,h_enorm
-    else:
-        print('Need to know the run # to get the normalization factors')
 
 ###
 # function to combine histograms from different runs, will be normalized by
 # efficiencies per run, then divided by total charge of combined runs.
+# updated to deal with different data sets
 ###        
         
-def combine_histos(histos,many=[]):
-    tot_q, enorm_h = normalize_histos(histos,many)
+def comb_n_norm_histos(histos,many=[]):   
+    combined_histos = {}
+    for i in many:
+        char = []
+        enorm_h = 0
+        for m in many[i]:
+            enorm = D.get_eff_norm(m)
+            char.append(D.get_charge_norm(m,curr='BCM1'))
+            
+            enorm_h += histos[m]/enorm
+        
+        tot_char = np.sum(np.array(char))
+        combined_histos[i] = enorm_h/tot_char
     
-    loop1 = True 
-    for m in many:
-        if loop1:
-            hsum = enorm_h[m]
-            # print('loop1: hsum.y_bin_center = ',hsum.y_bin_center)
-            loop1 = False
+    return combined_histos
+
+###
+# function to combine histograms but does not normalize them.
+# updated to handle sets of data
+###
+
+def combine_histos(histos,many=[]): 
+    combined_histos = {}
+    for i in many:
+        hsum = 0
+        for m in many[i]:
+            hsum += histos[m]
+        combined_histos[i] = hsum
+    return combined_histos
+
+
+
+###
+# function to project 2D histograms along x or y axis for a given bin range,
+# there are options to also get the integral of each projection by setting 
+# 'get_counts = True', and the range of integration can also be set in 
+# 'int_range'
+#       h2 -> 2D histogram to project
+#       project_along -> string | options: 'x', 'y' | axis of projection
+#       proj_bin_range -> tuple | set bin range on the projected axis, otherwise
+#                                    project all bins
+#       get_counts ------> bool | sum all bin contents of each projection, return 
+#                                    list of counts as well
+#       int_range ------> tuple | set range in axis of projection to get counts over
+#       proj_title ----> string | set title name of each projection histogram
+###
+
+def project_2D(h2,project_along='y',proj_bin_range=(),get_counts=False,int_range=[],
+               proj_title=''):
+    if project_along == 'y':
+        if proj_bin_range:
+            x_nbins_min = proj_bin_range[0]
+            x_nbins_max = proj_bin_range[1]
         else:
-            hsum += enorm_h[m]
-            # print('hsum.y_bin_center = ',hsum.y_bin_center)
+            x_nbins_min = 0
+            x_nbins_max = h2.nbins_x
+        xbin_width = h2.x_bin_width
+        
+        y_proj_h = []
+        int_counts = []
+        # proj_stats_err = []
+        for i in range(x_nbins_min,x_nbins_max):
+            xbin_center = h2.x_bin_center[i]
+            hproj = h2.project_y(bins=[i])            
+            hproj.title = f'{proj_title} = {xbin_center}$\pm${xbin_width/2}'
+            hproj.xlabel = ''
+            hproj.ylabel = ''
+            
+            #calculate stats error and store
+            # if stats_err:
+            #     c = hproj.bin_content
+            #     err = np.sqrt(c)
+            #     proj_stats_err.append(err)                
+            
+            
+            if get_counts:
+                if int_range:
+                    bin_counts = hproj.sum(int_range)
+                else:
+                    bin_counts = hproj.sum()
+                
+                int_counts.append(bin_counts)
+                hproj.title = hproj.title + f' (N = {bin_counts[0]:.0f})'
+            
+            y_proj_h.append(hproj)
+        if get_counts:
+            return (y_proj_h,np.array(int_counts))
+        else:
+            return y_proj_h
+        
+    elif project_along == 'x':
+        if proj_bin_range:
+            y_nbins_min = proj_bin_range[0]
+            y_nbins_max = proj_bin_range[1]
+        else:
+            y_nbins_min = 0
+            y_nbins_max = h2.nbins_y
+        ybin_width = h2.y_bin_width
+        
+        x_proj_h = []
+        int_counts = []
+        for i in range(y_nbins_min,y_nbins_max):
+            ybin_center = h2.y_bin_center[i]
+            hproj = h2.project_x(bins=[i])            
+            hproj.title = f'{proj_title} = {ybin_center}$\pm${ybin_width/2}'
+            hproj.xlabel = ''
+            hproj.ylabel = ''
+            
+            if get_counts:
+                if int_range:
+                    bin_counts = hproj.sum(int_range)
+                else:
+                    bin_counts = hproj.sum()
+                
+                int_counts.append(bin_counts)
+                hproj.title = hproj.title + f' (N = {bin_counts[0]:.0f})'
+            
+            x_proj_h.append(hproj)
+        if get_counts:
+            return (x_proj_h,np.array(int_counts))
+        else:
+            return x_proj_h
+
+###    
+# this function cuts out data points outside the phase space
+# must give phase space histograms in same bins
+# function fits phase space histos and cuts out data points
+# outside 1.5 sigma of fit
+##
+
+def inside_PS(PS_histo,histo,sigma_fac=1.0):
+    corr_histos = []
+    for i in range(len(histo)):
+        print(f'histo {i}')
+        if any(PS_histo[i].bin_content > 100.):
+            PS_histo[i].fit(ignore_zeros=True,plot_fit=False)
+            j = 2.
+            while PS_histo[i].chi2_red > 10. and j > 0.5:
+                PS_histo[i].fit(PS_histo[i].mean.value - j*PS_histo[i].sigma.value,
+                                PS_histo[i].mean.value + j*PS_histo[i].sigma.value,
+                                ignore_zeros=True,plot_fit=False)
+                j = j - 0.5
+            xmin = PS_histo[i].mean.value - sigma_fac*PS_histo[i].sigma.value
+            xmax = PS_histo[i].mean.value + sigma_fac*PS_histo[i].sigma.value
+        else:
+            xmin = -1e6
+            xmax = 1e6
+        
+        is_inside_PS = (histo[i].bin_center > xmin) & (histo[i].bin_center < xmax)
+        
+        newhisto = B.histo(bin_center=histo[i].bin_center[is_inside_PS],
+                           bin_content=histo[i].bin_content[is_inside_PS],
+                           bin_error=histo[i].bin_error[is_inside_PS],
+                           title=histo[i].title,
+                           xlabel=histo[i].xlabel,
+                           ylabel=histo[i].ylabel)
+        corr_histos.append(newhisto)
+    return corr_histos
+#%% Analysis Classes
+
+## class to make 2d histograms for yield extraction, 
+# class members are variables to plot, cuts, histograms with and without cuts,
+### just to plot necessary histograms for yield extraction and save them,
+# will have 1D histos of the variables as well as the needed 2D histos per run,
+# not normalized and no cuts
+# But SIMC histos will have weights applied, so -yes normalized
+
+"""
+CLASS yield_plots:
     
-    # print('hsum.bin_content[0] = ',hsum.bin_content[0])
-    #hsum.bin_content = (1/tot_q)*hsum.bin_content
-    # print('hsum.bin_content[0] = ',hsum.bin_content[0])       
-    qnorm_hsum = (1/tot_q)*hsum
-    # print('qnorm_hsum.y_bin_center =', qnorm_hsum.y_bin_center)
+This class will create an object with the necessary histograms used in yield 
+extraction, these are saved in the class member 'histos_2D' as a dictionary.
+The histograms can be made with and without cuts but SIMC histograms will
+always be weighted.
+
+    data_obj: data_init class object | with loaded runs/simc data, will need to 
+                have the necessary hcana/simc variables loaded for cuts and to 
+                do the yield extraction
     
-    return qnorm_hsum
+    use_cuts: bool | if True will use the saved '*_cut' variables assumed to 
+                        be in the data_init object
+    
+    data_type: string | 'deut23_data' or 'SIMC'
+"""
 
-###
-# made a function that applies the event selection cuts and stores the variables
-# with cuts back into the orginal data object
-###
-
-def apply_evt_sel_cuts(data_obj,is_SIMC=False,show_stats = False):
-    if is_SIMC:
-        Pm = data_obj.Branches['Pm']
-        Th_rq = data_obj.Branches['theta_rq']*radtodeg
-        Em = data_obj.Branches['Em']
-        WEIGHTS = D.calc_weights(data_obj.Branches)
-        WEIGHTS_PS = D.calc_weights_PS(data_obj.Branches)
-
-        cuts_list = C.event_selection_SIMC
+class yield_plots:
+    def __init__(self, data_obj, use_cuts = False, data_type = '',
+                 with_weights=True,calc_avg_kin=False):
+        d = data_obj.Branches
+        self.many = data_obj.many
+        self.histos_1D = {'Pm':None, 'Em':None, 'th_rq':None}
+        self.histos_2D = {'Pm_vs_th_rq':None, 'Em_vs_Pm':None}
+        self.has_weights = with_weights
         
-        hcoll_cut = C.coll_cut(data_obj,spec='HMS',is_SIMC=True)
-        hcoll_cut_arrays = hcoll_cut()
         
-        zt_cut = C.ztar_cut(data_obj,is_SIMC=True)
-        zt_cut_arrays = zt_cut()
-
-        cuts_to_apply_list = []
-        for cut in cuts_list:
-            br = data_obj.Branches[C.SIMC_names[cut.name]]
-            cut_array = cut(br)
-            # cut.stats()
-            
-            cuts_to_apply_list.append(cut_array)
-        # add special cut arrays to clist
-        cuts_to_apply_list.append(hcoll_cut_arrays)
-        cuts_to_apply_list.append(zt_cut_arrays)
+        #set histogram limits to default values,
+        # set_hist_lim can be called outside after initializing
+        # yield_plots to set custom ranges or bins, otherwise
+        # default values will be used
+        self.set_hist_lim()
         
-        all_cuts_sim = cuts_to_apply_list[0]
-        for arr in cuts_to_apply_list:    
-            all_cuts_sim = all_cuts_sim & arr  
+        if data_type == 'deut23_data':
+            self.has_weights = False
+            try:
+                self.Pm = {}
+                self.Em = {}
+                self.thrq = {}
+                for m in self.many:
+                    if use_cuts:
+                        self.Pm[m] = d[m]['H.kin.secondary.pmiss_cut']
+                        self.Em[m] = d[m]['H.kin.secondary.emiss_nuc_cut']
+                        self.thrq[m] = d[m]['H.kin.secondary.th_bq_cut']
+                    else:    
+                        self.Pm[m] = d[m]['H.kin.secondary.pmiss']
+                        self.Em[m] = d[m]['H.kin.secondary.emiss_nuc']
+                        self.thrq[m] = d[m]['H.kin.secondary.th_bq']*rtd
 
-        Pm_cut = Pm[all_cuts_sim]
-        Th_rq_cut = Th_rq[all_cuts_sim]
-        Em_cut = Em[all_cuts_sim] 
-        WEIGHTS_cut = WEIGHTS[all_cuts_sim]
-        WEIGHTS_PS_cut = WEIGHTS_PS[all_cuts_sim]
-
-        data_obj.Branches.update({'Pm_cut':Pm_cut,
-                                       'theta_rq_cut':Th_rq_cut,
-                                       'Em_cut':Em_cut,
-                                       'WEIGHTS_cut':WEIGHTS_cut,
-                                       'WEIGHTS_PS_cut':WEIGHTS_PS_cut})
-        print('SIMC data object updated with the branches:',
-              'Pm_cut, theta_rq_cut, Em_cut\n',
-              'WEIGHTS_cut, WEIGHTS_PS_cut\n')
-        print('Applied the following cuts:\n',
-              [c for c in cuts_list + [hcoll_cut,zt_cut]])
+            except TypeError:
+                if use_cuts:
+                    self.Pm = d['H.kin.secondary.pmiss_cut']
+                    self.Em = d['H.kin.secondary.emiss_nuc_cut']
+                    self.thrq = d['H.kin.secondary.th_bq_cut']
+                else:
+                    self.Pm = d['H.kin.secondary.pmiss']
+                    self.Em = d['H.kin.secondary.emiss_nuc']
+                    self.thrq = d['H.kin.secondary.th_bq']*rtd
         
-        if show_stats:
-            print('Cuts STATS:\n',
-                  [c.stats() for c in cuts_list])
-
-    else:
-        try:
-            Pm = {}
-            Th_rq = {}
-            Em = {}
-
-            for m in data_obj.many:
-                Pm[m] = data_obj.Branches[m]['H.kin.secondary.pmiss']
-                Th_rq[m] = data_obj.Branches[m]['H.kin.secondary.th_bq']*radtodeg
-                Em[m] = data_obj.Branches[m]['H.kin.secondary.emiss_nuc']    
-
-            ## making the cut lists
-            # first select the cuts to apply, defined already in cut_handler
-            
-            cuts_list = C.event_selection_cuts # contains hms_delta, shms_delta,
-                                                # shms_calPID,Em_cut,Q2_cut
-            
-            # initialize special cut classes: coll_cut, current_cut, ztar_cut,
-            # CTime_cut 
-            hcoll_cut = C.coll_cut(data_obj,spec='HMS',many=True)
-            hcoll_cut_arrays = hcoll_cut()
-            
-            curr_cut = C.current_cut(data_obj,current='BCM4A',many=True)
-            curr_cut_arrays = curr_cut()
-            
-            zt_cut = C.ztar_cut(data_obj,many=True)
-            zt_cut_arrays = zt_cut()
-            
-            ct_cut = C.CTime_cut(data_obj,many=True)
-            ct_cut_arrays = ct_cut() 
-            
-            #then make the cut arrays by getting the desired array from the DATA_INIT 
-            # object and print stats for said cut, the result is a list of boolean arrays
-            # for each cut, e.g. a Q2 cut will make a cut on the 'P.kin.primary.Q2' 
-            # variable and the result will be a boolean array
-            # note you will have a list of boolean arrays PER RUN, this is necessary to 
-            # preserve the length of the arrays, since each run has a different # of array
-            # elements.
-
-            cuts_to_apply = {}
-            for m in data_obj.many:
-
-                clist = []
-                for cut in cuts_list:
-                    br = data_obj.Branches[m][C.HCANA_names[cut.name]]
-                    cut_array = cut(br)
-                    # cut.stats()
+        elif data_type == 'SIMC':
+            try:
+                self.Pm = {}
+                self.Em = {}
+                self.thrq = {}
+                self.WEIGHTS = {}
+                self.WEIGHTS_PS = {}
+                if self.many is list:
+                    for m in self.many:
+                        if use_cuts:
+                            self.Pm[m] = d[m]['Pm_cut']
+                            self.Em[m] = d[m]['Em_cut']
+                            self.thrq[m] = d[m]['theta_rq_cut']
+                            self.WEIGHTS[m] = d[m]['WEIGHTS_cut']
+                            self.WEIGHTS_PS[m] = d[m]['WEIGHTS_PS_cut']
+                            
+                        else:    
+                            self.Pm[m] = d[m]['Pm']
+                            self.Em[m] = d[m]['Em']
+                            self.thrq[m] = d[m]['theta_rq']
+                            self.WEIGHTS[m] = D.calc_weights(d[m])
+                            self.WEIGHTS_PS[m] = D.calc_weights_PS(d[m])
+                else:
+                    raise(TypeError)
                     
-                    clist.append(cut_array)
-                
-                # add special cut arrays to clist
-                clist.append(hcoll_cut_arrays[m])
-                clist.append(curr_cut_arrays[m])
-                clist.append(zt_cut_arrays[m])
-                clist.append(ct_cut_arrays[m])
-                
-                # each run has a clist
-                cuts_to_apply[m] = clist
+            except TypeError:               
+                if use_cuts:
+                    self.Pm = d['Pm_cut']
+                    self.Em = d['Em_cut']
+                    self.thrq = d['theta_rq_cut']
+                    self.WEIGHTS = d['WEIGHTS_cut']
+                    self.WEIGHTS_PS = d['WEIGHTS_PS_cut']
+                    
+                    if calc_avg_kin:
+                        self.Ein_v = d['Ein_v_cut']
+                        self.kf_v = d['kf_v_cut']
+                        self.the_v = d['the_v_cut']
+                        self.pf_v = d['pf_v_cut']
+                        self.thp_v = d['thp_v_cut']
+                        self.q_v = d['q_v_cut']
+                        self.q_v_calc = d['q_v_calc_cut']
+                        self.thq_v = d['thq_v_cut']
+                        self.Q2_v = d['Q2_v_cut']
+                        self.omega_v = d['omega_v_cut']
+                        self.xbj_v = d['xbj_v_cut']
+                        self.pm_v = d['pm_v_cut']
+                        self.pm_v_calc = d['pm_v_calc_cut']
+                        self.th_pq_v = d['th_pq_v_cut']
+                        self.th_nq_v = d['th_nq_v_cut']
+                        self.ph_pq_v = d['ph_pq_v_cut']
+                        self.ph_nq_v = d['ph_nq_v_cut']
+                        self.sig = d['sig_cut']
+                    
+                else:    
+                    self.Pm = d['Pm']
+                    self.Em = d['Em']
+                    self.thrq = d['theta_rq']
+                    self.WEIGHTS = D.calc_weights(d)
+                    self.WEIGHTS_PS = D.calc_weights_PS(d)
+                    
+                    if calc_avg_kin:
+                        self.Ein_v = d['Ein_v_GeV']
+                        self.kf_v = d['kf_v']
+                        self.the_v = d['the_v']
+                        self.pf_v = d['pf_v_GeV']
+                        self.thp_v = d['thp_v']
+                        self.q_v = d['q_lab_v_GeV']
+                        self.q_v_calc = d['q_v_calc']
+                        self.thq_v = d['thq_v']
+                        self.Q2_v = d['Q2_v_GeV2']
+                        self.omega_v = d['nu_v_GeV']
+                        self.xbj_v = d['xbj_v']
+                        self.pm_v = d['pm_v_GeV']
+                        self.pm_v_calc = d['pm_v_calc']
+                        self.th_pq_v = d['th_pq_v']
+                        self.th_nq_v = d['th_nq_v']
+                        self.ph_pq_v = d['ph_pq_v']
+                        self.ph_nq_v = d['ph_nq_v']
+        else:
+            print('No data type chosen.\n',
+                  'Available types: "deut23_data", "SIMC"')
+    ###
+    # method to create desired histograms, note for SIMC histograms will be 
+    # weighted if the flag weights is set to True.
+    ###    
+    def make_histos(self):
+        histos_to_plot = {'Pm':[self.Pm,self.pm_range,self.pm_bins], 
+                          'Em':[self.Em,self.Em_range,self.Em_bins],
+                          'th_rq':[self.thrq,self.thrq_range,self.thrq_bins]}
+        
+        histos2D_to_plot = {'Pm_vs_th_rq':[self.thrq,self.Pm,
+                                           [self.thrq_range,self.thrq_bins],
+                                           [self.pm_range,self.pm_bins]],
+                            'Em_vs_Pm':[self.Pm,self.Em,
+                                        [self.pm_range,self.pm_bins],
+                                        [self.Em_range,self.Em_bins]]}
 
-            # to apply multiple cuts efficiently I combine all boolean arrays into one
-            # again there will be a total array for each run to preserve array length
-            # WARNING: if you try to make a cut by array slicing 
-            #  e.g. cut_arr = arr[bool_arr] 
-            # you will get a complaint if the boolean array is of a different size than 
-            # the original array
-
-            all_cuts = {}
-            for m in data_obj.many:
-                all_cuts[m] = cuts_to_apply[m][0]
-                for arr in cuts_to_apply[m]:    
-                    all_cuts[m] = all_cuts[m] & arr  
-
-            # now apply the cuts and store the cut arrays back in the DATA_INIT obj
-            for m in data_obj.many:
-                Pm_cut = Pm[m][all_cuts[m]]
-                Th_rq_cut = Th_rq[m][all_cuts[m]]
-                Em_cut = Em[m][all_cuts[m]]
-                
-                data_obj.Branches[m].update({'H.kin.secondary.pmiss_cut':Pm_cut,
-                                               'H.kin.secondary.th_bq_cut':Th_rq_cut,
-                                               'H.kin.secondary.emiss_nuc_cut':Em_cut})
-            
-            print('Data object updated with the branches:\n',
-                  'H.kin.secondary.pmiss_cut, H.kin.secondary.th_bq_cut,',
-                  'H.kin.secondary.emiss_nuc_cut\n')
-            print('Applied the following cuts:\n',
-                  [c for c in cuts_list + [hcoll_cut,curr_cut,zt_cut,ct_cut]])
-            
-            if show_stats:
-                print('Cuts STATS:\n',
-                      [c.stats() for c in cuts_list + [hcoll_cut,curr_cut,zt_cut,ct_cut]])
+        # make 1D histograms and store them in self.histos_1D
+        try:
+            for v in histos_to_plot:
+                h = {}
+                if type(self.many) is list:
+                    for m in self.many:
+                        histo = histos_to_plot[v][0][m]
+                        ran = histos_to_plot[v][1]
+                        nbins = histos_to_plot[v][2]
+                        
+                        if self.has_weights:
+                            h[m] = B.histo(histo,range = ran, bins = nbins,
+                                           weights = self.WEIGHTS[m],
+                                           calc_w2=True)
+                        else:
+                            h[m] = B.histo(histo,range = ran, bins = nbins)                
+                    self.histos_1D[v] = h
+                else:
+                    raise(TypeError)
                 
         except TypeError:
-            
-            Pm = data_obj.Branches['H.kin.secondary.pmiss']
-            Th_rq = data_obj.Branches['H.kin.secondary.th_bq']*radtodeg
-            Em = data_obj.Branches['H.kin.secondary.emiss_nuc']    
-
-            ## making the cut lists
-            # first select the cuts to apply, defined already in cut_handler
-            cuts_list = C.event_selection_cuts
-            
-            # initialize special cut classes: coll_cut, current_cut, ztar_cut,
-            # CTime_cut 
-            hcoll_cut = C.coll_cut(data_obj,spec='HMS')
-            hcoll_cut_arrays = hcoll_cut()
-            
-            curr_cut = C.current_cut(data_obj,current='BCM4A')
-            curr_cut_arrays = curr_cut()
-            
-            zt_cut = C.ztar_cut(data_obj)
-            zt_cut_arrays = zt_cut()
-            
-            ct_cut = C.CTime_cut(data_obj)
-            ct_cut_arrays = ct_cut() 
-             
-            #then make the cut arrays by getting the desired array from the DATA_INIT 
-            # object and print stats for said cut, the result is a list of boolean arrays
-            # for each cut, e.g. a Q2 cut will make a cut on the 'P.kin.primary.Q2' 
-            # variable and the result will be a boolean array
-            # note you will have a list of boolean arrays PER RUN, this is necessary to 
-            # preserve the length of the arrays, since each run has a different # of array
-            # elements.
-
-            cuts_to_apply_list = []
-            for cut in cuts_list:
-                br = data_obj.Branches[C.HCANA_names[cut.name]]
-                cut_array = cut(br)
-                # cut.stats()
+            for v in histos_to_plot:
+                histo = histos_to_plot[v][0]
+                ran = histos_to_plot[v][1]
+                nbins = histos_to_plot[v][2]
                 
-                cuts_to_apply_list.append(cut_array)
-                
-            # add special cut arrays to cuts_to_apply_list
-            cuts_to_apply_list.append(hcoll_cut_arrays)
-            cuts_to_apply_list.append(curr_cut_arrays)
-            cuts_to_apply_list.append(zt_cut_arrays)
-            cuts_to_apply_list.append(ct_cut_arrays)
-                
-            # to apply multiple cuts efficiently I combine all boolean arrays into one
-            # again there will be a total array for each run to preserve array length
-            # WARNING: if you try to make a cut by array slicing 
-            #  e.g. cut_arr = arr[bool_arr] 
-            # you will get a complaint if the boolean array is of a different size than 
-            # the original array
-
-            all_cuts = cuts_to_apply_list[0]
-            for arr in cuts_to_apply_list:    
-                all_cuts = all_cuts & arr  
-
-            # now apply the cuts and store the cut arrays back in the DATA_INIT obj
-  
-            Pm_cut = Pm[all_cuts]
-            Th_rq_cut = Th_rq[all_cuts]
-            Em_cut = Em[all_cuts]
+                if self.has_weights:
+                    h = B.histo(histo,range = ran, bins = nbins,
+                                   weights = self.WEIGHTS,
+                                   calc_w2=True)
+                else:    
+                    h = B.histo(histo,range = ran, bins = nbins)
+                    
+                self.histos_1D[v] = h
             
-            data_obj.Branches[m].update({'H.kin.secondary.pmiss_cut':Pm_cut,
-                                           'H.kin.secondary.th_bq_cut':Th_rq_cut,
-                                           'H.kin.secondary.emiss_nuc_cut':Em_cut})
+                
+        # make 2D histograms and store them in self.histos_2D
+        try:
+            for v in histos2D_to_plot:
+                h = {}
+                if type(self.many) is list:
+
+                    for m in self.many:
+                        hx = histos2D_to_plot[v][0][m]
+                        hy = histos2D_to_plot[v][1][m]
+                        ranx = histos2D_to_plot[v][2][0]
+                        rany = histos2D_to_plot[v][3][0]
+                        nxbins = histos2D_to_plot[v][2][1]
+                        nybins = histos2D_to_plot[v][3][1]
+                        
+                        if self.has_weights:
+                            h[m] = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins],
+                                             weights = self.WEIGHTS[m],
+                                             calc_w2=True)
+                        else:
+                            h[m] = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins])               
+                    self.histos_2D[v] = h
+                else:
+                    raise(TypeError)
+                
+        except TypeError:
+            for v in histos2D_to_plot:
+                hx = histos2D_to_plot[v][0]
+                hy = histos2D_to_plot[v][1]
+                ranx = histos2D_to_plot[v][2][0]
+                rany = histos2D_to_plot[v][3][0]
+                nxbins = histos2D_to_plot[v][2][1]
+                nybins = histos2D_to_plot[v][3][1]
+                
+                if self.has_weights:
+                    h = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins],
+                                     weights = self.WEIGHTS,
+                                     calc_w2=True)
+                else:
+                    h = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins])
+                
+                self.histos_2D[v] = h
+    
+    def make_PS_histos(self):
+        W = self.WEIGHTS_PS
+        histos_to_plot = {'Pm_PS':[self.Pm,W,self.pm_range,self.pm_bins], 
+                          'Em_PS':[self.Em,W,self.Em_range,self.Em_bins],
+                          'th_rq_PS':[self.thrq,W,self.thrq_range,self.thrq_bins]}
         
-            print('Data object updated with the branches:\n',
-                  'H.kin.secondary.pmiss_cut, H.kin.secondary.th_bq_cut,',
-                  'H.kin.secondary.emiss_nuc_cut\n')
-            print('Applied the following cuts:\n',
-                  [c for c in cuts_list + [hcoll_cut,curr_cut,zt_cut,ct_cut]])
-            
-            if show_stats:
-                print('Cuts STATS:\n',
-                      [c.stats() for c in cuts_list + [hcoll_cut,curr_cut,zt_cut,ct_cut]])
+        histos2D_to_plot = {'Pm_vs_th_rq_PS':[self.thrq,self.Pm,W,
+                                           [self.thrq_range,self.pm_range],
+                                           [self.thrq_bins,self.pm_bins]],
+                            'Em_vs_Pm_PS':[self.Pm,self.Em,W,
+                                        [self.pm_range,self.Em_range],
+                                        [self.pm_bins,self.Em_bins]]}
+        # make 1D phase space histograms
+        self.__make_histos1D(histos_to_plot)
 
+        # make 2D phase space histograms
+        self.__make_histos2D(histos2D_to_plot)
+    
+    ###
+    # method to create avg. kinematics histograms
+    ###    
+    def make_avgKin_histos(self):
+        pm_v = self.pm_v
+        thrq_v = self.th_nq_v
+        
+        histos_to_plot = {'pm_v':[pm_v,self.WEIGHTS,(-0.1,1.5),38],
+                          'pm_v_calc':[self.pm_v_calc,self.WEIGHTS,(-0.1,1.5),38],
+                          'th_nq_v':[thrq_v,self.WEIGHTS,(0,190),19],
+                          'Ein_v':[self.Ein_v,self.WEIGHTS,(10.5,10.6),100],
+                          'kf_v':[self.kf_v,self.WEIGHTS,(7.75,9),100],
+                          'the_v':[self.the_v,self.WEIGHTS,(10,14),40],
+                          'pf_v':[self.pf_v,self.WEIGHTS,(2.5,3.5),100],
+                          'thp_v':[self.thp_v,self.WEIGHTS,(0,180),100],
+                          'q_v':[self.q_v,self.WEIGHTS,(2,3.5),100],
+                          'q_v_calc':[self.q_v_calc,self.WEIGHTS,(2,3.5),100],
+                          'thq_v':[self.thq_v,self.WEIGHTS,(30,55),25],
+                          'Q2_v':[self.Q2_v,self.WEIGHTS,(2.5,5.5),60],
+                          'omega_v':[self.omega_v,self.WEIGHTS,(1.5,3),100],
+                          'xbj_v':[self.xbj_v,self.WEIGHTS,(0.8,2.0),100],
+                          'th_pq_v':[self.th_pq_v,self.WEIGHTS,(0,180),100],
+                          'ph_pq_v':[self.ph_pq_v,self.WEIGHTS,(-180,180),100],
+                          'ph_nq_v':[self.ph_nq_v,self.WEIGHTS,(-180,180),100],
+                          'cph_pq_v':[np.cos(self.ph_pq_v),self.WEIGHTS,(-1,1),100],
+                          'sph_pq_v':[np.sin(self.ph_pq_v),self.WEIGHTS,(-1,1),100]}
+        
+        W = self.WEIGHTS
+        Ein_W = self.Ein_v*self.WEIGHTS
+        kf_W = self.kf_v*self.WEIGHTS
+        the_W = self.the_v*self.WEIGHTS
+        pf_W = self.pf_v*self.WEIGHTS
+        thp_W = self.thp_v*self.WEIGHTS
+        q_W = self.q_v*self.WEIGHTS
+        thq_W = self.thq_v*self.WEIGHTS
+        Q2_W = self.Q2_v*self.WEIGHTS
+        om_W = self.omega_v*self.WEIGHTS
+        xbj_W = self.xbj_v*self.WEIGHTS
+        pm_W = pm_v*self.WEIGHTS
+        thpq_W = self.th_pq_v*self.WEIGHTS
+        thnq_W = self.th_nq_v*self.WEIGHTS
+        phpq_W = self.ph_pq_v*self.WEIGHTS
+        phnq_W = self.ph_nq_v*self.WEIGHTS
+        cphpq_W = np.cos(self.ph_pq_v/rtd)*self.WEIGHTS
+        sphpq_W = np.sin(self.ph_pq_v/rtd)*self.WEIGHTS
+        sig_W = self.sig*W
+
+        histos2D_to_plot = {'Pm_vs_thnq_v':[thrq_v,pm_v,W,
+                                            [self.thrq_range,self.pm_range],
+                                            [self.thrq_bins,self.pm_bins]],
+                            'Ein_2Davg':[thrq_v,pm_v,Ein_W,
+                                        [self.thrq_range,self.pm_range],
+                                        [self.thrq_bins,self.pm_bins]],
+                            'kf_2Davg':[thrq_v,pm_v,kf_W,
+                                       [self.thrq_range,self.pm_range],
+                                       [self.thrq_bins,self.pm_bins]],
+                            'the_2Davg':[thrq_v,pm_v,the_W,
+                                        [self.thrq_range,self.pm_range],
+                                        [self.thrq_bins,self.pm_bins]],
+                            'pf_2Davg':[thrq_v,pm_v,pf_W,
+                                       [self.thrq_range,self.pm_range],
+                                       [self.thrq_bins,self.pm_bins]],
+                            'thp_2Davg':[thrq_v,pm_v,thp_W,
+                                        [self.thrq_range,self.pm_range],
+                                        [self.thrq_bins,self.pm_bins]],
+                            'q_2Davg':[thrq_v,pm_v,q_W,
+                                      [self.thrq_range,self.pm_range],
+                                      [self.thrq_bins,self.pm_bins]],
+                            'thq_2Davg':[thrq_v,pm_v,thq_W,
+                                        [self.thrq_range,self.pm_range],
+                                        [self.thrq_bins,self.pm_bins]],
+                            'Q2_2Davg':[thrq_v,pm_v,Q2_W,
+                                       [self.thrq_range,self.pm_range],
+                                       [self.thrq_bins,self.pm_bins]],
+                            'omega_2Davg':[thrq_v,pm_v,om_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'xbj_2Davg':[thrq_v,pm_v,xbj_W,
+                                        [self.thrq_range,self.pm_range],
+                                        [self.thrq_bins,self.pm_bins]],
+                            'Pm_2Davg':[thrq_v,pm_v,pm_W,
+                                       [self.thrq_range,self.pm_range],
+                                       [self.thrq_bins,self.pm_bins]],
+                            'th_pq_2Davg':[thrq_v,pm_v,thpq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'th_nq_2Davg':[thrq_v,pm_v,thnq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'ph_pq_2Davg':[thrq_v,pm_v,phpq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'ph_nq_2Davg':[thrq_v,pm_v,phnq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'cph_pq_2Davg':[thrq_v,pm_v,cphpq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'sph_pq_2Davg':[thrq_v,pm_v,sphpq_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]],
+                            'sig_2Davg':[thrq_v,pm_v,sig_W,
+                                          [self.thrq_range,self.pm_range],
+                                          [self.thrq_bins,self.pm_bins]]}  
+        
+        # make 1D histograms and store them in self.histos_1D
+        self.__make_histos1D(histos_to_plot)
+        
+        # make 2D histograms and store them in self.histos_2D
+        self.__make_histos2D(histos2D_to_plot)
+        
+        # finish avg histos by dividing by Pm_vs_thnq_v
+        self.__divide_avg_histos(self.histos_2D)
+    
+    def set_hist_lim(self,pm_range=(-0.1,1.5),pm_bins=38,thrq_range=(0,125),
+                     thrq_bins=25,Em_range=(-0.1,0.1),Em_bins=38):
+        self.pm_range = pm_range
+        self.pm_bins = pm_bins
+        self.thrq_range = thrq_range
+        self.thrq_bins = thrq_bins
+        self.Em_range = Em_range
+        self.Em_bins = Em_bins
+        
+    def plot_histos(self,histo=[]):
+        all_histos = {}
+        all_histos.update(self.histos_1D)
+        all_histos.update(self.histos_2D)
+        
+        if histo:
+            try:
+                for h in histo:
+                    # print('Plotting ', h)
+                    for m in self.many:
+                        B.pl.figure()
+                        p = all_histos[h][m]
+                        p.plot()
+                        B.pl.title(f'{h} {m}')
+                        B.pl.xlabel('')
+                        B.pl.ylabel('')
+                                     
+            except TypeError:
+                # print('Plotting ', h)  
+                B.pl.figure()
+                p = all_histos[h]
+                p.plot()
+                B.pl.title(h)
+                B.pl.xlabel('')
+                B.pl.ylabel('')
+                
+        else:
+            try: 
+                for h in all_histos:
+                    # print('Plotting ', h)
+                    for m in self.many:  
+                        B.pl.figure()
+                        p = all_histos[h][m]
+                        p.plot()
+                        B.pl.title(f'{h} {m}')
+                        B.pl.xlabel('')
+                        B.pl.ylabel('')
+                        
+            except TypeError:    
+                for h in all_histos:
+                    # print('Plotting ', h)  
+                    B.pl.figure()
+                    p = all_histos[h]
+                    p.plot()
+                    B.pl.title(h)
+                    B.pl.xlabel('')
+                    B.pl.ylabel('')
+
+    def __make_histos1D(self,histo_dict):
+        for v in histo_dict:
+            histo = histo_dict[v][0]
+            w = histo_dict[v][1]
+            ran = histo_dict[v][2]
+            nbins = histo_dict[v][3]
+            
+            if self.has_weights:
+                h = B.histo(histo,range = ran, bins = nbins,
+                            weights = w, calc_w2=True)
+            else:    
+                h = B.histo(histo,range = ran, bins = nbins)
+                
+            self.histos_1D[v] = h
+    
+    def __make_histos2D(self,histo_dict):
+        for v in histo_dict:
+            hx = histo_dict[v][0]
+            hy = histo_dict[v][1]
+            w = histo_dict[v][2]
+            ran = histo_dict[v][3]
+            nbins = histo_dict[v][4]
+            
+            if self.has_weights:
+                h = B.histo2d(hx, hy, range = ran, bins = nbins,
+                                 weights = w, calc_w2=True)
+            else:
+                h = B.histo2d(hx,hy,range=ran,bins=nbins)
+            
+            self.histos_2D[v] = h
+            
+    def __divide_avg_histos(self,histo_dict):
+        for histo in histo_dict:
+            if histo == 'Pm_vs_thnq_v' or histo[-3:] != 'avg':
+                continue
+            else:
+                h = histo_dict[histo]/histo_dict['Pm_vs_thnq_v']
+                
+                h.title = histo
+                h.xlabel = '$\\theta_{nq}$ (vertex)'
+                h.ylabel = '$P_m$ (vertex)'
+                
+                histo_dict[histo] = h
+        
+#%% load runs with selected branches
+DATA_baseDIR = "/media/gvill/Gema's T7/ROOTfiles/pass_3/"
+SIMC_baseDIR = "/media/gvill/Gema's T7/ROOTfiles/worksim/deep_alloffsets/"
+
+load_simc = ['JML']
+# load_simc = ['Paris','CD-Bonn']
+# load_simc = ['V18']
+
+load_data = input('Select a setting to load:\npm_120, pm_580, pm_800, pm_900\n')
+
+F = L.load_data_init(setting=load_data,data_dir=DATA_baseDIR,
+                   simc_dir=SIMC_baseDIR,simc_models=load_simc,
+                   load_comm_data=False,load_data=False)
+
+calc_vertex_kinematics = False
+
+#%% calculate avg kinematics variables
+print('** Going to calculate avg kin...')
+calc_vertex_kinematics = True
+
+if calc_vertex_kinematics:
+    if F.load_JML:
+        L.calc_vertex_kin(F.JML_FSInorad)
+        L.calc_vertex_kin(F.JML_PWIAnorad)
+    if F.load_PAR:
+        L.calc_vertex_kin(F.PAR_FSInorad)
+        L.calc_vertex_kin(F.PAR_PWIAnorad)
+            
+#%% Apply cuts to data and SIMC
+# in this part of the code I apply cuts to the needed DATA and SIMC variables and
+# save them back in the DATA_INIT object as '[variable_name]_cut'
+
+print('** Applying cuts to data...')
+if F.load_data:
+    C.apply_evt_sel_cuts(F.data,PCOLL=False)
+if F.load_JML:
+    C.apply_evt_sel_cuts(F.JML_FSIrad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.JML_PWIArad, is_SIMC=True,PCOLL=False)
+    if calc_vertex_kinematics:
+        C.apply_evt_sel_cuts(F.JML_FSInorad, is_SIMC=True,PCOLL=False,calc_avg_kin=True)
+        C.apply_evt_sel_cuts(F.JML_PWIAnorad, is_SIMC=True,PCOLL=False,calc_avg_kin=True)
+    else:
+        C.apply_evt_sel_cuts(F.JML_FSInorad, is_SIMC=True,PCOLL=False)
+        C.apply_evt_sel_cuts(F.JML_PWIAnorad, is_SIMC=True,PCOLL=False)       
+if F.load_PAR:
+    C.apply_evt_sel_cuts(F.PAR_FSIrad, is_SIMC=True,PCOLL=False)
+    if calc_vertex_kinematics:
+        C.apply_evt_sel_cuts(F.PAR_FSInorad, is_SIMC=True,PCOLL=False,calc_avg_kin=True)
+        C.apply_evt_sel_cuts(F.PAR_PWIAnorad, is_SIMC=True,PCOLL=False,calc_avg_kin=True)
+    else:
+        C.apply_evt_sel_cuts(F.PAR_FSInorad, is_SIMC=True,PCOLL=False)
+        C.apply_evt_sel_cuts(F.PAR_PWIAnorad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.PAR_PWIArad, is_SIMC=True,PCOLL=False)
+if F.load_V18:
+    C.apply_evt_sel_cuts(F.V18_FSIrad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.V18_FSInorad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.V18_PWIAnorad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.V18_PWIArad, is_SIMC=True,PCOLL=False)
+if F.load_CDB:
+    C.apply_evt_sel_cuts(F.CDB_FSIrad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.CDB_FSInorad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.CDB_PWIAnorad, is_SIMC=True,PCOLL=False)
+    C.apply_evt_sel_cuts(F.CDB_PWIArad, is_SIMC=True,PCOLL=False)
+    
+#%% use the class yield_plots to create the data histograms
+print('** Creating data plots...')
+if F.load_data:
+    dataPlots_cut = yield_plots(F.data,use_cuts=True,data_type='deut23_data')
+    dataPlots_cut.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                               pm_range=(3.469446951953614e-18,1.2),
+                               pm_bins=30)
+    dataPlots_cut.make_histos()
+    
+    dataPlots_nocut = yield_plots(F.data,use_cuts=False,
+                                  data_type='deut23_data')
+    dataPlots_nocut.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                               pm_range=(3.469446951953614e-18,1.2),
+                               pm_bins=30)
+    dataPlots_nocut.make_histos()
+
+# create necessary histograms from SIMC
+print('** Creating SIMC plots...')
+# JML
+if F.load_JML:
+    jmlPlots_cut_FSIrad = yield_plots(F.JML_FSIrad,use_cuts=True,
+                                       data_type='SIMC')
+    jmlPlots_cut_FSIrad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                     pm_range=(3.469446951953614e-18,1.2),
+                                     pm_bins=30)
+    jmlPlots_cut_FSIrad.make_histos()
+    
+    if calc_vertex_kinematics:
+        jmlPlots_cut_FSInorad = yield_plots(F.JML_FSInorad,use_cuts=True,
+                                             data_type='SIMC',calc_avg_kin=True)
+    else:
+        jmlPlots_cut_FSInorad = yield_plots(F.JML_FSInorad,use_cuts=True,
+                                             data_type='SIMC')
+        
+    # jmlPlots_cut_FSInorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+    #                                    pm_range=(3.469446951953614e-18,1.2),
+    #                                    pm_bins=30)
+    jmlPlots_cut_FSInorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                       pm_range=(3.469446951953614e-18,1.2),
+                                       pm_bins=30)
+    jmlPlots_cut_FSInorad.make_histos()
+    jmlPlots_cut_FSInorad.make_PS_histos()
+    if calc_vertex_kinematics:
+        jmlPlots_cut_FSInorad.make_avgKin_histos()
+    
+    if calc_vertex_kinematics:
+        jmlPlots_cut_PWIAnorad = yield_plots(F.JML_PWIAnorad,use_cuts=True,
+                                              data_type='SIMC',calc_avg_kin=True)
+    else:
+        jmlPlots_cut_PWIAnorad = yield_plots(F.JML_PWIAnorad,use_cuts=True,
+                                              data_type='SIMC')
+    jmlPlots_cut_PWIAnorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                        pm_range=(3.469446951953614e-18,1.2),
+                                        pm_bins=30)
+    jmlPlots_cut_PWIAnorad.make_histos()
+    jmlPlots_cut_PWIAnorad.make_PS_histos()
+    if calc_vertex_kinematics:
+        jmlPlots_cut_PWIAnorad.make_avgKin_histos()
+    
+    jmlPlots_cut_PWIArad = yield_plots(F.JML_PWIArad,use_cuts=True,
+                                          data_type='SIMC')
+    jmlPlots_cut_PWIArad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                      pm_range=(3.469446951953614e-18,1.2),
+                                      pm_bins=30)
+    jmlPlots_cut_PWIArad.make_histos()
+# Paris
+if F.load_PAR:
+    parPlots_cut_FSIrad = yield_plots(F.PAR_FSIrad,use_cuts=True,
+                                       data_type='SIMC')
+    parPlots_cut_FSIrad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                     pm_range=(3.469446951953614e-18,1.2),
+                                     pm_bins=30)
+    parPlots_cut_FSIrad.make_histos()
+    
+    if calc_vertex_kinematics:
+        parPlots_cut_FSInorad = yield_plots(F.PAR_FSInorad,use_cuts=True,
+                                             data_type='SIMC',calc_avg_kin=True)
+    else:
+        parPlots_cut_FSInorad = yield_plots(F.PAR_FSInorad,use_cuts=True,
+                                             data_type='SIMC')
+    parPlots_cut_FSInorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                       pm_range=(3.469446951953614e-18,1.2),
+                                       pm_bins=30)
+    parPlots_cut_FSInorad.make_histos()
+    parPlots_cut_FSInorad.make_PS_histos()
+    if calc_vertex_kinematics:
+        parPlots_cut_FSInorad.make_avgKin_histos()
+    
+    if calc_vertex_kinematics:
+        parPlots_cut_PWIAnorad = yield_plots(F.PAR_PWIAnorad,use_cuts=True,
+                                              data_type='SIMC',calc_avg_kin=True)
+    else:
+        parPlots_cut_PWIAnorad = yield_plots(F.PAR_PWIAnorad,use_cuts=True,
+                                              data_type='SIMC')
+    parPlots_cut_PWIAnorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                        pm_range=(3.469446951953614e-18,1.2),
+                                        pm_bins=30)
+    parPlots_cut_PWIAnorad.make_histos() 
+    parPlots_cut_PWIAnorad.make_PS_histos()
+    if calc_vertex_kinematics:
+        parPlots_cut_PWIAnorad.make_avgKin_histos()
+    
+    parPlots_cut_PWIArad = yield_plots(F.PAR_PWIArad,use_cuts=True,
+                                          data_type='SIMC')
+    parPlots_cut_PWIArad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                        pm_range=(3.469446951953614e-18,1.2),
+                                        pm_bins=30)
+    parPlots_cut_PWIArad.make_histos()
+    
+# V18
+if F.load_V18:
+    v18Plots_cut_FSIrad = yield_plots(F.V18_FSIrad,use_cuts=True,
+                                       data_type='SIMC')
+    v18Plots_cut_FSIrad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                     pm_range=(3.469446951953614e-18,1.2),
+                                     pm_bins=30)
+    v18Plots_cut_FSIrad.make_histos()
+    
+    v18Plots_cut_FSInorad = yield_plots(F.V18_FSInorad,use_cuts=True,
+                                         data_type='SIMC')
+    v18Plots_cut_FSInorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                       pm_range=(3.469446951953614e-18,1.2),
+                                       pm_bins=30)
+    v18Plots_cut_FSInorad.make_histos()
+    v18Plots_cut_FSInorad.make_PS_histos()
+    
+    v18Plots_cut_PWIAnorad = yield_plots(F.V18_PWIAnorad,use_cuts=True,
+                                          data_type='SIMC')
+    v18Plots_cut_PWIAnorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                        pm_range=(3.469446951953614e-18,1.2),
+                                        pm_bins=30)
+    v18Plots_cut_PWIAnorad.make_histos() 
+    v18Plots_cut_PWIAnorad.make_PS_histos()
+# CD-Bonn
+if F.load_CDB:
+    cdbPlots_cut_FSIrad = yield_plots(F.CDB_FSIrad,use_cuts=True,
+                                       data_type='SIMC')
+    cdbPlots_cut_FSIrad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                     pm_range=(3.469446951953614e-18,1.2),
+                                     pm_bins=30)
+    cdbPlots_cut_FSIrad.make_histos()
+    
+    cdbPlots_cut_FSInorad = yield_plots(F.CDB_FSInorad,use_cuts=True,
+                                         data_type='SIMC')
+    cdbPlots_cut_FSInorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                       pm_range=(3.469446951953614e-18,1.2),
+                                       pm_bins=30)
+    cdbPlots_cut_FSInorad.make_histos()
+    cdbPlots_cut_FSInorad.make_PS_histos()
+    
+    cdbPlots_cut_PWIAnorad = yield_plots(F.CDB_PWIAnorad,use_cuts=True,
+                                          data_type='SIMC')
+    cdbPlots_cut_PWIAnorad.set_hist_lim(thrq_range=(0,190),thrq_bins=19,
+                                        pm_range=(3.469446951953614e-18,1.2),
+                                        pm_bins=30)
+    cdbPlots_cut_PWIAnorad.make_histos()  
+    cdbPlots_cut_PWIAnorad.make_PS_histos()                       
+
+print('Finished creating plots...') 
+#%%
+# manipulate histograms to get yields and xsec
+# use combine_histos() function to normalize and combine histograms from 
+# different runs, the efficiency normalization is done per run by another 
+# function normalize_histos() and calculates the total charge, then the 
+# charge normalization is done at the end and that histo is returned.
+
+# set filename here
+save = False
+filename = f'yield_n_xsec/{F.setting}_data_PAR_histos.pcl'
+
+print('** Going to get yields and xsec...')
+
+if F.load_data:
+    many = F.data.many
+    
+    sets = db.retrieve('deuteron_db.db', 'run,data_set', 'RUN_LIST_UPDATED', 
+        where= f"setting=\'{F.setting}\'")
+    if F.setting == 'pm_120' or F.setting == 'pm_580':
+        many = {'set_1':[x[0]for x in sets if x[1] == 'set_1'],
+                'set_2':[x[0]for x in sets if x[1] == 'set_2']}
+    else:
+        many = {'set_1':[x[0]for x in sets if x[1] == 'set_1']}
+    
+    # data raw counts
+    data_raw_h = combine_histos(dataPlots_nocut.histos_2D['Pm_vs_th_rq'],
+                                many)
+    
+    # not normalized yield 
+    yield_h = combine_histos(dataPlots_cut.histos_2D['Pm_vs_th_rq'],
+                                   many)
+    
+    # normalized yield
+    yield_norm_h = comb_n_norm_histos(dataPlots_cut.histos_2D['Pm_vs_th_rq'],
+                                            many)
+    
+    norm_yield_proj = {}
+    raw_yield_proj = {} ; raw_yield_counts = {}
+    relative_error = {}
+    for s in yield_norm_h:
+        # Not Normalized and Norm Yield Projections
+        norm_yield_proj[s] = project_2D(yield_norm_h[s],
+                                           proj_title='$\\theta_{rq}$') 
+        
+        raw_yield_proj[s], raw_yield_counts[s] = project_2D(yield_h[s], 
+                                                            get_counts=True,
+                                                  proj_title='$\\theta_{rq}$')
+        # relative error projections
+        temp = {}
+        for h in raw_yield_proj[s]:
+            stats_err = np.sqrt(h.bin_content)
+            rel_err = (stats_err/h.bin_content)*100 # in [%]
+            
+            temp[h.title] = rel_err
+            relative_error[s] = temp
+
+# JML SIMC plots
+if F.load_JML:
+    # Phase Space and PS projection
+    JML_FSI_PS = jmlPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq_PS']
+    JML_FSI_PS_proj = project_2D(JML_FSI_PS, proj_title='$\\theta_{rq}$')
+    
+    JML_PWIA_PS = jmlPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq_PS']
+    JML_PWIA_PS_proj = project_2D(JML_PWIA_PS, proj_title='$\\theta_{rq}$')
+    
+    # JML SIMC FSI Cross Section
+    JML_fsi_xsec_h = jmlPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                                                                JML_FSI_PS   
+    # JML FSI Cross Section Projection
+    JML_fsi_xsec_proj = project_2D(JML_fsi_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+    # JML SIMC PWIA Cross Section
+    JML_pwia_xsec_h = jmlPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                                                                JML_PWIA_PS
+    # JML PWIA Cross Section Projection
+    JML_pwia_xsec_proj = project_2D(JML_pwia_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+     
+    # JML Yield Projections                   
+    JML_FSI_norad_proj = project_2D(jmlPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                                    proj_title='$\\theta_{rq}$') 
+    
+    JML_FSI_rad_proj = project_2D(jmlPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                                  proj_title='$\\theta_{rq}$')
+    
+    JML_PWIA_norad_proj = project_2D(jmlPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                                     proj_title='$\\theta_{rq}$') 
+
+    JML_PWIA_rad_proj = project_2D(jmlPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'],
+                                   proj_title='$\\theta_{rq}$')   
+    
+### Cross Section Calculation using JML #######################################
+    
+    # JML radiative correction histogram Y_norad/Y_rad
+    JML_FSI_ratio_h = jmlPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                    jmlPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq']
+    JML_FSI_radcorr_proj = project_2D(JML_FSI_ratio_h,
+                                      proj_title='$\\theta_{rq}$')
+    
+    JML_PWIA_ratio_h = jmlPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                    jmlPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'] 
+    JML_PWIA_radcorr_proj = project_2D(JML_PWIA_ratio_h,
+                                      proj_title='$\\theta_{rq}$')
+
+    if F.load_data:
+        # Data Cross Section for each data set
+        JML_yield_FSI_radcorr_h = {}
+        JML_norm_yield_FSI_radcorr_proj = {}
+        JML_yield_PWIA_radcorr_h = {}
+        JML_norm_yield_PWIA_radcorr_proj = {}
+        JML_FSI_dataXsec_h = {}
+        JML_FSI_dataXsec_proj = {}
+        JML_PWIA_dataXsec_h = {} 
+        JML_PWIA_dataXsec_proj = {}
+        for s in yield_norm_h:
+            # Radiative corrected yield
+            JML_yield_FSI_radcorr_h[s] = JML_FSI_ratio_h*yield_norm_h[s]
+            JML_norm_yield_FSI_radcorr_proj[s] = project_2D(JML_yield_FSI_radcorr_h[s],
+                                                   proj_title='$\\theta_{rq}$')
+            
+            JML_yield_PWIA_radcorr_h[s] = JML_PWIA_ratio_h*yield_norm_h[s]
+            JML_norm_yield_PWIA_radcorr_proj[s] = project_2D(JML_yield_PWIA_radcorr_h[s],
+                                               proj_title='$\\theta_{rq}$')
+            
+            # Data Differential Cross Section
+            JML_FSI_dataXsec_h[s] = JML_yield_FSI_radcorr_h[s]/JML_FSI_PS 
+            JML_FSI_dataXsec_proj[s] = project_2D(JML_FSI_dataXsec_h[s],proj_title='$\\theta_{rq}$')
+            
+            JML_PWIA_dataXsec_h[s] = JML_yield_PWIA_radcorr_h[s]/JML_PWIA_PS
+            JML_PWIA_dataXsec_proj[s] = project_2D(JML_PWIA_dataXsec_h[s],proj_title='$\\theta_{rq}$')
+                 
+# PAR SIMC plots
+if F.load_PAR:
+    # Phase Space and PS projection
+    PAR_FSI_PS = parPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq_PS']
+    PAR_FSI_PS_proj = project_2D(PAR_FSI_PS, proj_title='$\\theta_{rq}$')
+    
+    PAR_PWIA_PS = parPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq_PS']
+    PAR_PWIA_PS_proj = project_2D(PAR_PWIA_PS, proj_title='$\\theta_{rq}$')
+    
+    # PAR SIMC FSI Cross Section
+    PAR_fsi_xsec_h = parPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                                                                PAR_FSI_PS   
+    # PAR FSI Cross Section Projection
+    PAR_fsi_xsec_proj = project_2D(PAR_fsi_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+    # PAR SIMC PWIA Cross Section
+    PAR_pwia_xsec_h = parPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                                                                PAR_PWIA_PS
+    
+    # PAR PWIA Cross Section Projection
+    PAR_pwia_xsec_proj = project_2D(PAR_pwia_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+     
+    # PAR Yield Projections                   
+    PAR_FSI_norad_proj = project_2D(parPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                                    proj_title='$\\theta_{rq}$') 
+    
+    PAR_FSI_rad_proj = project_2D(parPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                                  proj_title='$\\theta_{rq}$')
+    
+    PAR_PWIA_norad_proj = project_2D(parPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                                     proj_title='$\\theta_{rq}$')
+    
+    PAR_PWIA_rad_proj = project_2D(parPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'],
+                                     proj_title='$\\theta_{rq}$')
+    
+### Cross Section Calculation using PAR #######################################
+    
+    # PAR radiative correction histogram Y_norad/Y_rad
+    PAR_FSI_ratio_h = parPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                    parPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq']
+    PAR_FSI_radcorr_proj = project_2D(PAR_FSI_ratio_h,
+                                      proj_title='$\\theta_{rq}$')
+    
+    PAR_PWIA_ratio_h = parPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                    parPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'] 
+    PAR_PWIA_radcorr_proj = project_2D(PAR_PWIA_ratio_h,
+                                      proj_title='$\\theta_{rq}$')
+
+    if F.load_data:
+        # Data Cross Section for each data set
+        PAR_yield_FSI_radcorr_h = {}
+        PAR_norm_yield_FSI_radcorr_proj = {}
+        PAR_yield_PWIA_radcorr_h = {}
+        PAR_norm_yield_PWIA_radcorr_proj = {}
+        PAR_FSI_dataXsec_h = {}
+        PAR_FSI_dataXsec_proj = {}
+        PAR_PWIA_dataXsec_h = {} 
+        PAR_PWIA_dataXsec_proj = {}
+        for s in yield_norm_h:
+            # Radiative corrected yield
+            PAR_yield_FSI_radcorr_h[s] = PAR_FSI_ratio_h*yield_norm_h[s]
+            PAR_norm_yield_FSI_radcorr_proj[s] = project_2D(PAR_yield_FSI_radcorr_h[s],
+                                                   proj_title='$\\theta_{rq}$')
+            
+            PAR_yield_PWIA_radcorr_h[s] = PAR_PWIA_ratio_h*yield_norm_h[s]
+            PAR_norm_yield_PWIA_radcorr_proj[s] = project_2D(PAR_yield_PWIA_radcorr_h[s],
+                                               proj_title='$\\theta_{rq}$')
+            
+            # Data Differential Cross Section
+            PAR_FSI_dataXsec_h[s] = PAR_yield_FSI_radcorr_h[s]/PAR_FSI_PS 
+            PAR_FSI_dataXsec_proj[s] = project_2D(PAR_FSI_dataXsec_h[s],proj_title='$\\theta_{rq}$')
+            
+            PAR_PWIA_dataXsec_h[s] = PAR_yield_PWIA_radcorr_h[s]/PAR_PWIA_PS
+            PAR_PWIA_dataXsec_proj[s] = project_2D(PAR_PWIA_dataXsec_h[s],proj_title='$\\theta_{rq}$')
+
+# V18 SIMC plots
+if F.load_V18:
+    # Phase Space and PS projection
+    V18_FSI_PS = v18Plots_cut_FSInorad.histos_2D['Pm_vs_th_rq_PS']
+    V18_FSI_PS_proj = project_2D(V18_FSI_PS, proj_title='$\\theta_{rq}$')
+    
+    V18_PWIA_PS = v18Plots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq_PS']
+    V18_PWIA_PS_proj = project_2D(V18_PWIA_PS, proj_title='$\\theta_{rq}$')
+    
+    # V18 SIMC FSI Cross Section
+    V18_fsi_xsec_h = v18Plots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                                                                V18_FSI_PS   
+    # V18 FSI Cross Section Projection
+    V18_fsi_xsec_proj = project_2D(V18_fsi_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+    # V18 SIMC PWIA Cross Section
+    V18_pwia_xsec_h = v18Plots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                                                                V18_PWIA_PS
+    
+    # V18 PWIA Cross Section Projection
+    V18_pwia_xsec_proj = project_2D(V18_pwia_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+     
+    # V18 Yield Projections                   
+    V18_FSI_norad_proj = project_2D(v18Plots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                                    proj_title='$\\theta_{rq}$') 
+    
+    V18_FSI_rad_proj = project_2D(v18Plots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                                  proj_title='$\\theta_{rq}$')
+    
+    V18_PWIA_norad_proj = project_2D(v18Plots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                                     proj_title='$\\theta_{rq}$') 
+# CDB SIMC plots
+if F.load_CDB:
+    # Phase Space and PS projection
+    CDB_FSI_PS = cdbPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq_PS']
+    CDB_FSI_PS_proj = project_2D(CDB_FSI_PS, proj_title='$\\theta_{rq}$')
+    
+    CDB_PWIA_PS = cdbPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq_PS']
+    CDB_PWIA_PS_proj = project_2D(CDB_FSI_PS, proj_title='$\\theta_{rq}$')
+    
+    # CDB SIMC FSI Cross Section
+    CDB_fsi_xsec_h = cdbPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
+                                                                CDB_FSI_PS   
+    # CDB FSI Cross Section Projection
+    CDB_fsi_xsec_proj = project_2D(CDB_fsi_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+    # CDB SIMC PWIA Cross Section
+    CDB_pwia_xsec_h = cdbPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
+                                                                CDB_PWIA_PS
+    
+    # CDB PWIA Cross Section Projection
+    CDB_pwia_xsec_proj = project_2D(CDB_pwia_xsec_h,
+                                                proj_title='$\\theta_{rq}$')
+     
+    # CDB Yield Projections                   
+    CDB_FSI_norad_proj = project_2D(cdbPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                                    proj_title='$\\theta_{rq}$') 
+    
+    CDB_FSI_rad_proj = project_2D(cdbPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                                  proj_title='$\\theta_{rq}$')
+    
+    CDB_PWIA_norad_proj = project_2D(cdbPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                                     proj_title='$\\theta_{rq}$')    
+# get commissioning data Cross Section and proj
+
+if F.load_cd:
+    if F.setting == 'pm_120':
+        pm80_Xsec_h = F.pm80_data.histos['H_data2DXsec']
+        pm80_xsec_proj = project_2D(pm80_Xsec_h,proj_title='$\\theta_{rq}$')
+    elif F.setting == 'pm_580':
+        h1 = F.pm580_comm_data1.histos['H_data2DXsec']
+        h2 = F.pm580_comm_data2.histos['H_data2DXsec']
+        # h = {'data1':h1,'data2':h2}
+        # pm580_comm_Xsec_h = combine_histos(h,['data1','data2'])
+        pm580_comm_Xsec_h = h1
+        pm580_comm_xsec_proj = project_2D(pm580_comm_Xsec_h,proj_title='$\\theta_{rq}$')
+    elif F.setting == 'pm_800' or F.setting == 'pm_900':
+        h1 = F.pm580_comm_data1.histos['H_data2DXsec']
+        h2 = F.pm580_comm_data2.histos['H_data2DXsec']
+        # h = {'data1':h1,'data2':h2}
+        # pm580_comm_Xsec_h = combine_histos(h,['data1','data2'])
+        pm580_comm_Xsec_h = h1
+        pm580_comm_xsec_proj = project_2D(pm580_comm_Xsec_h,proj_title='$\\theta_{rq}$')
+        h1 = F.pm750_data1.histos['H_data2DXsec']
+        h2 = F.pm750_data2.histos['H_data2DXsec']
+        h3 = F.pm750_data3.histos['H_data2DXsec']
+        # h = {'data1':h1,'data2':h2,'data3':h3}
+        # pm750_Xsec_h = combine_histos(h,['data1','data2','data3'])
+        pm750_Xsec_h = h1
+        pm750_xsec_proj = project_2D(pm750_Xsec_h,proj_title='$\\theta_{rq}$')
+
+# save histograms to a pickle file 
+# define dict of histograms to save
+hist = {}
+if F.load_data:
+    hist.update({'data_raw': data_raw_h,
+            f'{F.setting}_yield': yield_h,
+            f'{F.setting}_yield_norm': yield_norm_h,   
+            f'{F.setting}_yield_norm_proj': norm_yield_proj,
+            f'{F.setting}_yield_proj': raw_yield_proj,
+            f'{F.setting}_yield_counts':raw_yield_counts,
+            f'{F.setting}_Relative_Stats_Error': relative_error
+            })
+
+if F.load_JML:
+    hist.update({f'{F.setting}_JML_FSI_PS': JML_FSI_PS,
+                 f'{F.setting}_JML_FSI_PS_proj': JML_FSI_PS_proj,
+                 f'{F.setting}_JML_PWIA_PS': JML_PWIA_PS,
+                 f'{F.setting}_JML_PWIA_PS_proj': JML_PWIA_PS_proj,
+                 f'{F.setting}_JML_fsi_xsec': JML_fsi_xsec_h,
+                 f'{F.setting}_JML_fsi_xsec_proj': JML_fsi_xsec_proj,
+                 f'{F.setting}_JML_pwia_xsec': JML_pwia_xsec_h,
+                 f'{F.setting}_JML_pwia_xsec_proj': JML_pwia_xsec_proj,
+                 f'{F.setting}_JML_Yield_FSI_norad':jmlPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_JML_Yield_FSI_norad_proj':JML_FSI_norad_proj,
+                 f'{F.setting}_JML_Yield_FSI_rad':jmlPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_JML_Yield_FSI_rad_proj':JML_FSI_rad_proj,
+                 f'{F.setting}_JML_Yield_PWIA_norad':jmlPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_JML_Yield_PWIA_norad_proj':JML_PWIA_norad_proj,
+                 f'{F.setting}_JML_Yield_PWIA_rad':jmlPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_JML_Yield_PWIA_rad_proj':JML_PWIA_rad_proj,
+                 f'{F.setting}_JML_FSI_radcorr_factor':JML_FSI_ratio_h,
+                 f'{F.setting}_JML_FSI_radcorr_factor_proj':JML_FSI_radcorr_proj,
+                 f'{F.setting}_JML_PWIA_radcorr_factor':JML_PWIA_ratio_h,
+                 f'{F.setting}_JML_PWIA_radcorr_factor_proj':JML_PWIA_radcorr_proj
+                 })
+    if F.load_data:
+        hist.update({f'{F.setting}_yield_JML_FSI_radcorr': JML_yield_FSI_radcorr_h,
+            f'{F.setting}_yield_JML_FSI_radcorr_proj': JML_norm_yield_FSI_radcorr_proj,
+            f'{F.setting}_yield_JML_PWIA_radcorr': JML_yield_PWIA_radcorr_h,
+            f'{F.setting}_yield_JML_PWIA_radcorr_proj': JML_norm_yield_PWIA_radcorr_proj,
+            f'{F.setting}_JML_FSI_data_xsec': JML_FSI_dataXsec_h,
+            f'{F.setting}_JML_FSI_data_xsec_proj': JML_FSI_dataXsec_proj,
+            f'{F.setting}_JML_PWIA_data_xsec': JML_PWIA_dataXsec_h,
+            f'{F.setting}_JML_PWIA_data_xsec_proj': JML_PWIA_dataXsec_proj,
+            })
+        
+if F.load_PAR:
+    hist.update({f'{F.setting}_PAR_FSI_PS': PAR_FSI_PS,
+                 f'{F.setting}_PAR_FSI_PS_proj': PAR_FSI_PS_proj,
+                 f'{F.setting}_PAR_PWIA_PS': PAR_PWIA_PS,
+                 f'{F.setting}_PAR_PWIA_PS_proj': PAR_PWIA_PS_proj,
+                 f'{F.setting}_PAR_fsi_xsec': PAR_fsi_xsec_h,
+                 f'{F.setting}_PAR_fsi_xsec_proj': PAR_fsi_xsec_proj,
+                 f'{F.setting}_PAR_pwia_xsec': PAR_pwia_xsec_h,
+                 f'{F.setting}_PAR_pwia_xsec_proj': PAR_pwia_xsec_proj,
+                 f'{F.setting}_PAR_Yield_FSI_norad':parPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_PAR_Yield_FSI_norad_proj':PAR_FSI_norad_proj,
+                 f'{F.setting}_PAR_Yield_FSI_rad':parPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_PAR_Yield_FSI_rad_proj':PAR_FSI_rad_proj,
+                 f'{F.setting}_PAR_Yield_PWIA_norad':parPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_PAR_Yield_PWIA_norad_proj':PAR_PWIA_norad_proj,
+                 f'{F.setting}_PAR_Yield_PWIA_rad':parPlots_cut_PWIArad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_PAR_Yield_PWIA_rad_proj':PAR_PWIA_rad_proj,
+                 f'{F.setting}_PAR_FSI_radcorr_factor':PAR_FSI_ratio_h,
+                 f'{F.setting}_PAR_FSI_radcorr_factor_proj':PAR_FSI_radcorr_proj,
+                 f'{F.setting}_PAR_PWIA_radcorr_factor':PAR_PWIA_ratio_h,
+                 f'{F.setting}_PAR_PWIA_radcorr_factor_proj':PAR_PWIA_radcorr_proj
+                 })
+    if F.load_data:
+        hist.update({f'{F.setting}_yield_PAR_FSI_radcorr': PAR_yield_FSI_radcorr_h,
+            f'{F.setting}_yield_PAR_FSI_radcorr_proj': PAR_norm_yield_FSI_radcorr_proj,
+            f'{F.setting}_yield_PAR_PWIA_radcorr': PAR_yield_PWIA_radcorr_h,
+            f'{F.setting}_yield_PAR_PWIA_radcorr_proj': PAR_norm_yield_PWIA_radcorr_proj,
+            f'{F.setting}_PAR_FSI_data_xsec': PAR_FSI_dataXsec_h,
+            f'{F.setting}_PAR_FSI_data_xsec_proj': PAR_FSI_dataXsec_proj,
+            f'{F.setting}_PAR_PWIA_data_xsec': PAR_PWIA_dataXsec_h,
+            f'{F.setting}_PAR_PWIA_data_xsec_proj': PAR_PWIA_dataXsec_proj,
+            })
+if F.load_V18:
+    hist.update({f'{F.setting}_V18_Yield_FSI_norad':v18Plots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_V18_Yield_FSI_rad':v18Plots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_V18_Yield_PWIA_norad':v18Plots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_V18_Yield_FSI_norad_proj':V18_FSI_norad_proj,
+                 f'{F.setting}_V18_Yield_FSI_rad_proj':V18_FSI_rad_proj,
+                 f'{F.setting}_V18_Yield_PWIA_norad_proj':V18_PWIA_norad_proj,
+                 f'{F.setting}_V18_fsi_xsec': V18_fsi_xsec_h,
+                 f'{F.setting}_V18_pwia_xsec': V18_pwia_xsec_h,
+                 f'{F.setting}_V18_fsi_xsec_proj': V18_fsi_xsec_proj,
+                 f'{F.setting}_V18_pwia_xsec_proj': V18_pwia_xsec_proj,
+                 f'{F.setting}_V18_FSI_PS': V18_FSI_PS,
+                 f'{F.setting}_V18_FSI_PS_proj': V18_FSI_PS_proj})
+if F.load_CDB:
+    hist.update({f'{F.setting}_CDB_Yield_FSI_norad':cdbPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_CDB_Yield_FSI_rad':cdbPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_CDB_Yield_PWIA_norad':cdbPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq'],
+                 f'{F.setting}_CDB_Yield_FSI_norad_proj':CDB_FSI_norad_proj,
+                 f'{F.setting}_CDB_Yield_FSI_rad_proj':CDB_FSI_rad_proj,
+                 f'{F.setting}_CDB_Yield_PWIA_norad_proj':CDB_PWIA_norad_proj,
+                 f'{F.setting}_CDB_fsi_xsec': CDB_fsi_xsec_h,
+                 f'{F.setting}_CDB_pwia_xsec': CDB_pwia_xsec_h,
+                 f'{F.setting}_CDB_fsi_xsec_proj': CDB_fsi_xsec_proj,
+                 f'{F.setting}_CDB_pwia_xsec_proj': CDB_pwia_xsec_proj,
+                 f'{F.setting}_CDB_FSI_PS': CDB_FSI_PS,
+                 f'{F.setting}_CDB_FSI_PS_proj': CDB_FSI_PS_proj})
+
+if F.load_cd:
+    if F.setting == 'pm_120':
+        hist.update({'pm80_xsec':pm80_Xsec_h,
+                     'pm80_xsec_proj':pm80_xsec_proj})
+    elif F.setting == 'pm_580':
+        hist.update({'pm580_comm_xsec':pm580_comm_Xsec_h,
+                     'pm580_comm_xsec_proj':pm580_comm_xsec_proj})
+    elif F.setting == 'pm_800' or F.setting == 'pm_900':
+        hist.update({'pm580_comm_xsec':pm580_comm_Xsec_h,
+                     'pm580_comm_xsec_proj':pm580_comm_xsec_proj,
+                     'pm750_xsec':pm750_Xsec_h,
+                     'pm750_xsec_proj':pm750_xsec_proj})
+if save:
+    with open(filename, 'wb') as f:
+        P.dump(hist,f)
+    print(f'Saved {filename}\n')
+
+#%% save 2D avg histograms into pickle file
+if F.load_JML:
+    save_histos(F.JML_FSInorad,jmlPlots_cut_FSInorad)
+    save_histos(F.JML_PWIAnorad,jmlPlots_cut_PWIAnorad)
+if F.load_PAR:
+    save_histos(F.PAR_FSInorad,parPlots_cut_FSInorad)
+    save_histos(F.PAR_PWIAnorad,parPlots_cut_PWIAnorad)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%% histogram manipulation to get xsec
+#####################
+# OLD CODE GRAVEYARD
+#####################
 ###
 # function to get the yield based on a y-axis projection,
 #   in a specified bin range in x, the projection is done bin by bin and 
 #   the integral of the projected histogram is taken from y_min to y_max
 # the opposite is true for projection along x-axis, set the flag project_x 
 # to True to invert yield projection 
+# NOT USED
 ###
 
 def get_yield(h2,bin_range,proj_min,proj_max,norm=1,plot_proj=False,project_x=False):
@@ -392,383 +1415,8 @@ def get_yield(h2,bin_range,proj_min,proj_max,norm=1,plot_proj=False,project_x=Fa
     
     return (proj_values,yield_values,yield_errors,y_proj,h_y_proj)
 
-#%% Analysis Classes
 
-## class to make 2d histograms for yield extraction, 
-# class members are variables to plot, cuts, histograms with and without cuts,
-### just to plot necessary histograms for yield extraction and save them,
-# will have 1D histos of the variables as well as the needed 2D histos per run,
-# not normalized and no cuts
-# But SIMC histos will have weights applied, so -yes normalized
-
-"""
-CLASS yield_plots:
-    
-This class will create an object with the necessary histograms used in yield 
-extraction, these are saved in the class member 'histos_2D' as a dictionary.
-The histograms can be made with and without cuts but SIMC histograms will
-always be weighted.
-
-    data_obj: data_init class object | with loaded runs/simc data, will need to 
-                have the necessary hcana/simc variables loaded for cuts and to 
-                do the yield extraction
-    
-    use_cuts: bool | if True will use the saved '*_cut' variables assumed to 
-                        be in the data_init object
-    
-    data_type: string | 'deut23_data' or 'SIMC'
-"""
-
-class yield_plots:
-    def __init__(self, data_obj, use_cuts = False, data_type = ''):
-        d = data_obj.Branches
-        self.many = data_obj.many
-        self.histos_1D = {'Pm':None, 'Em':None, 'th_rq':None}
-        self.histos_2D = {'Pm_vs_th_rq':None, 'Em_vs_Pm':None}
-        
-        if data_type == 'deut23_data':
-            try:
-                self.Pm = {}
-                self.Em = {}
-                self.thrq = {}
-                for m in self.many:
-                    if use_cuts:
-                        self.Pm[m] = d[m]['H.kin.secondary.pmiss_cut']
-                        self.Em[m] = d[m]['H.kin.secondary.emiss_nuc_cut']
-                        self.thrq[m] = d[m]['H.kin.secondary.th_bq_cut']
-                    else:    
-                        self.Pm[m] = d[m]['H.kin.secondary.pmiss']
-                        self.Em[m] = d[m]['H.kin.secondary.emiss_nuc']
-                        self.thrq[m] = d[m]['H.kin.secondary.th_bq']*radtodeg
-
-            except TypeError:
-                if use_cuts:
-                    self.Pm = d['H.kin.secondary.pmiss_cut']
-                    self.Em = d['H.kin.secondary.emiss_nuc_cut']
-                    self.thrq = d['H.kin.secondary.th_bq_cut']
-                else:
-                    self.Pm = d['H.kin.secondary.pmiss']
-                    self.Em = d['H.kin.secondary.emiss_nuc']
-                    self.thrq = d['H.kin.secondary.th_bq']*radtodeg
-        
-        elif data_type == 'SIMC':
-            try:
-                self.Pm = {}
-                self.Em = {}
-                self.thrq = {}
-                self.WEIGHTS = {}
-                self.WEIGHTS_PS = {}
-                if self.many is list:
-                    for m in self.many:
-                        if use_cuts:
-                            self.Pm[m] = d[m]['Pm_cut']
-                            self.Em[m] = d[m]['Em_cut']
-                            self.thrq[m] = d[m]['theta_rq_cut']
-                            self.WEIGHTS[m] = d[m]['WEIGHTS_cut']
-                            self.WEIGHTS_PS[m] = d[m]['WEIGHTS_PS_cut']
-                            
-                        else:    
-                            self.Pm[m] = d[m]['Pm']
-                            self.Em[m] = d[m]['Em']
-                            self.thrq[m] = d[m]['theta_rq']
-                            self.WEIGHTS[m] = D.calc_weights(d[m])
-                            self.WEIGHTS_PS[m] = D.calc_weights_PS(d[m])
-                else:
-                    raise(TypeError)
-                    
-            except TypeError:               
-                if use_cuts:
-                    self.Pm = d['Pm_cut']
-                    self.Em = d['Em_cut']
-                    self.thrq = d['theta_rq_cut']
-                    self.WEIGHTS = d['WEIGHTS_cut']
-                    self.WEIGHTS_PS = d['WEIGHTS_PS_cut']
-                    
-                else:    
-                    self.Pm = d['Pm']
-                    self.Em = d['Em']
-                    self.thrq = d['theta_rq']
-                    self.WEIGHTS = D.calc_weights(d)
-                    self.WEIGHTS_PS = D.calc_weights_PS(d)
-                    
-        else:
-            print('No data type chosen.\n',
-                  'Available types: "deut23_data", "SIMC"')
-    ###
-    # method to create desired histograms, note for SIMC histograms will be 
-    # weighted if the flag weights is set to True.
-    ###    
-    def make_histos(self, weights = False, nbins = 100):
-        histos_to_plot = {'Pm':[self.Pm,(-0.1,1.5)], 'Em':[self.Em,(-0.1,0.1)],
-            'th_rq':[self.thrq,(0,180)]}
-        
-        histos2D_to_plot = {'Pm_vs_th_rq':[self.thrq,self.Pm,[(0,180),60],[(-0.1,1.5),38]],
-                            'Em_vs_Pm':[self.Pm,self.Em,[(-0.1,1.5),38],[(-0.1,0.1),38]]}
-
-        # make 1D histograms and store them in self.histos_1D
-        try:
-            for v in histos_to_plot:
-                h = {}
-                if type(self.many) is list:
-                    for m in self.many:
-                        histo = histos_to_plot[v][0][m]
-                        ran = histos_to_plot[v][1]
-                        
-                        if weights:
-                            h[m] = B.histo(histo,range = ran, bins = nbins,
-                                           weights = self.WEIGHTS[m],
-                                           calc_w2=True)
-                        else:
-                            h[m] = B.histo(histo,range = ran, bins = nbins)                
-                    self.histos_1D[v] = h
-                else:
-                    raise(TypeError)
-                
-        except TypeError:
-            for v in histos_to_plot:
-                histo = histos_to_plot[v][0]
-                ran = histos_to_plot[v][1]
-                
-                if weights:
-                    h = B.histo(histo,range = ran, bins = nbins,
-                                   weights = self.WEIGHTS,
-                                   calc_w2=True)
-                else:    
-                    h = B.histo(histo,range = ran, bins = nbins)
-                    
-                self.histos_1D[v] = h
-            
-                
-        # make 2D histograms and store them in self.histos_2D
-        try:
-            for v in histos2D_to_plot:
-                h = {}
-                if type(self.many) is list:
-
-                    for m in self.many:
-                        hx = histos2D_to_plot[v][0][m]
-                        hy = histos2D_to_plot[v][1][m]
-                        ranx = histos2D_to_plot[v][2][0]
-                        rany = histos2D_to_plot[v][3][0]
-                        nxbins = histos2D_to_plot[v][2][1]
-                        nybins = histos2D_to_plot[v][3][1]
-                        
-                        if weights:
-                            h[m] = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins],
-                                             weights = self.WEIGHTS[m],
-                                             calc_w2=True)
-                        else:
-                            h[m] = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins])               
-                    self.histos_2D[v] = h
-                else:
-                    raise(TypeError)
-                
-        except TypeError:
-            for v in histos2D_to_plot:
-                hx = histos2D_to_plot[v][0]
-                hy = histos2D_to_plot[v][1]
-                ranx = histos2D_to_plot[v][2][0]
-                rany = histos2D_to_plot[v][3][0]
-                nxbins = histos2D_to_plot[v][2][1]
-                nybins = histos2D_to_plot[v][3][1]
-                
-                if weights:
-                    h = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins],
-                                     weights = self.WEIGHTS,
-                                     calc_w2=True)
-                else:
-                    h = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins])
-                
-                self.histos_2D[v] = h
-    
-    def make_PS_histos(self,nbins = 100):
-        histos_to_plot = {'Pm_PS':[self.Pm,(-0.1,1.5)], 'Em_PS':[self.Em,(-0.1,0.1)],
-            'th_rq_PS':[self.thrq,(0,180)]}
-        
-        histos2D_to_plot = {'Pm_vs_th_rq_PS':[self.thrq,self.Pm,[(0,180),60],[(-0.1,1.5),38]],
-                            'Em_vs_Pm_PS':[self.Pm,self.Em,[(-0.1,1.5),38],[(-0.1,0.1),38]]}
-
-        # make 1D phase space histograms
-        for v in histos_to_plot:
-            histo = histos_to_plot[v][0]
-            ran = histos_to_plot[v][1]
-            
-            h = B.histo(histo,range = ran, bins = nbins,
-                           weights = self.WEIGHTS_PS,
-                           calc_w2=True)
-           
-            self.histos_1D[v] = h
-
-        # make 2D phase space histograms
-        for v in histos2D_to_plot:
-            hx = histos2D_to_plot[v][0]
-            hy = histos2D_to_plot[v][1]
-            ranx = histos2D_to_plot[v][2][0]
-            rany = histos2D_to_plot[v][3][0]
-            nxbins = histos2D_to_plot[v][2][1]
-            nybins = histos2D_to_plot[v][3][1]
-            
-            h = B.histo2d(hx,hy,range=[ranx,rany],bins=[nxbins,nybins],
-                             weights = self.WEIGHTS_PS,
-                             calc_w2=True)
-             
-            self.histos_2D[v] = h
-    
-    def plot_histos(self,histo=[]):
-        all_histos = {}
-        all_histos.update(self.histos_1D)
-        all_histos.update(self.histos_2D)
-        
-        if histo:
-            try:
-                for h in histo:
-                    # print('Plotting ', h)
-                    for m in self.many:
-                        B.pl.figure()
-                        p = all_histos[h][m]
-                        p.plot()
-                        B.pl.title(f'{h} {m}')
-                        B.pl.xlabel('')
-                        B.pl.ylabel('')
-                                     
-            except TypeError:
-                # print('Plotting ', h)  
-                B.pl.figure()
-                p = all_histos[h]
-                p.plot()
-                B.pl.title(h)
-                B.pl.xlabel('')
-                B.pl.ylabel('')
-                
-        else:
-            try: 
-                for h in all_histos:
-                    # print('Plotting ', h)
-                    for m in self.many:  
-                        B.pl.figure()
-                        p = all_histos[h][m]
-                        p.plot()
-                        B.pl.title(f'{h} {m}')
-                        B.pl.xlabel('')
-                        B.pl.ylabel('')
-                        
-            except TypeError:    
-                for h in all_histos:
-                    # print('Plotting ', h)  
-                    B.pl.figure()
-                    p = all_histos[h]
-                    p.plot()
-                    B.pl.title(h)
-                    B.pl.xlabel('')
-                    B.pl.ylabel('')
-
-
-#%% conversion factors
-radtodeg = 180./np.pi
-
-#%% select appropriate HCANA variables 
-kin_var = ['H.kin.secondary.th_bq','H.kin.secondary.pmiss',
-           'H.kin.secondary.emiss_nuc','P.kin.primary.Q2']
-
-sieve_var = ['H.extcor.xsieve', 'H.extcor.ysieve',
-                  'P.extcor.xsieve', 'P.extcor.ysieve']
-
-coinTime_var = ['CTime.epCoinTime_ROC2']
-
-acc_var = ['H.gtr.dp','P.gtr.dp','H.gtr.th','H.gtr.ph','P.gtr.th','P.gtr.ph']
-
-calPID_var = ['P.cal.etottracknorm']
-
-z_react_var = ['H.react.z','P.react.z']
-
-T_sel = kin_var + coinTime_var + acc_var + calPID_var + sieve_var + z_react_var
-
-br_sel_sim = ['theta_rq','Pm','Em','Q2','e_delta','h_delta','Weight','Normfac',
-              'e_xptar','e_yptar','h_xptar','h_yptar','tar_x','h_zv','e_zv',
-              'h_ytar','e_ytar']
-    
-TSP_sel = ['evNumber','P.BCM4A.scalerCharge','P.BCM4A.scalerChargeCut',
-           'P.BCM4A.scalerCurrent',
-           'P.BCM4B.scalerCharge','P.BCM4B.scalerCurrent',
-           'P.BCM4C.scalerCharge','P.BCM4C.scalerCurrent',
-           'P.1MHz.scalerTime']
-
-br_sel = {'T':T_sel,'TSP':TSP_sel}
-t_sel = ['T','TSP']
-
-
-#%% load runs with selected branches
-run_list = [20871,20872,20871,20872,21065,21066,21067,21068,21069,21070,
-            21071,21072,21073,21074,21075]
-
-DATA_baseDIR = "/media/gvill/Gema's T7/ROOTfiles"
-pm_120 = '/pass_2/'
-
-deep_pm120 = D.DATA_INIT(data_type='deut23_data',run=run_list,
-                         select_branches=br_sel,
-                         select_trees=t_sel,
-                         ROOTfiles_path= DATA_baseDIR+pm_120)
-
-#%% load SIMC files
-# directory paths for different SIMC files
-SIMC_baseDIR = "/media/gvill/Gema's T7/ROOTfiles/worksim" +\
-                "/deep_pm120/"
-
-SIMC_FSIrad = D.DATA_INIT(data_type='SIMC',setting = 'pm_120',
-                              select_branches={'SNT':br_sel_sim},
-                              SIMC_ROOTfiles_path=SIMC_baseDIR,
-                              simc_type='jmlfsi_rad')
-SIMC_FSInorad = D.DATA_INIT(data_type='SIMC',setting = 'pm_120',
-                              select_branches={'SNT':br_sel_sim},
-                              SIMC_ROOTfiles_path=SIMC_baseDIR,
-                              simc_type='jmlfsi_norad')
-SIMC_PWIAnorad = D.DATA_INIT(data_type='SIMC',setting = 'pm_120',
-                              select_branches={'SNT':br_sel_sim},
-                              SIMC_ROOTfiles_path=SIMC_baseDIR,
-                              simc_type='jmlpwia_norad')
-
-               
-#%% Prepare the data and make histograms
-# in this part of the code I apply cuts to the needed DATA ans SIMC variables and
-# save them back in the DATA_INIT object as '[variable_name]_cut'
-
-apply_evt_sel_cuts(deep_pm120)
-apply_evt_sel_cuts(SIMC_FSIrad, is_SIMC=True)
-apply_evt_sel_cuts(SIMC_FSInorad, is_SIMC=True)
-apply_evt_sel_cuts(SIMC_PWIAnorad, is_SIMC=True)
-    
-#%% use the class yield_plots to create the data histograms
-dataPlots_cut = yield_plots(deep_pm120,use_cuts=True,data_type='deut23_data')
-dataPlots_cut.make_histos()
-
-# use combine_histos() function to normalize and combine histograms from 
-# different runs, the efficiency normalization is done per run by another 
-# function normalize_histos() and calculates the total charge, then the 
-# charge normalization is done at the end and that histo is returned.
- 
-pm120_h = combine_histos(dataPlots_cut.histos_2D['Pm_vs_th_rq'],deep_pm120.many)
-
-#%% create necessary histograms from SIMC
-
-simcPlots_cut_FSIrad = yield_plots(SIMC_FSIrad,use_cuts=True,data_type='SIMC')
-simcPlots_cut_FSIrad.make_histos(weights=True)
-
-simcPlots_cut_FSInorad = yield_plots(SIMC_FSInorad,use_cuts=True,data_type='SIMC')
-simcPlots_cut_FSInorad.make_histos(weights=True)
-simcPlots_cut_FSInorad.make_PS_histos()
-
-simcPlots_cut_PWIAnorad = yield_plots(SIMC_PWIAnorad,use_cuts=True,data_type='SIMC')
-simcPlots_cut_PWIAnorad.make_histos(weights=True)
-simcPlots_cut_PWIAnorad.make_PS_histos()
-
-FSI_ratio_h = simcPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq']/\
-                simcPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq']
-# set nans from division to zero
-FSI_ratio_h.set_nans()                                
-
-#%% histogram manipulation to get xsec
-
-pm120_h_radcorr = FSI_ratio_h*pm120_h
+pm120_h_radcorr = FSI_ratio_h*pm120_h_norm
 
 pm120_h_Xsec = pm120_h_radcorr/\
                 simcPlots_cut_FSInorad.histos_2D['Pm_vs_th_rq_PS']
@@ -785,6 +1433,51 @@ SIMC_pm120_h_PWIAXsec = simcPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq']/\
                          simcPlots_cut_PWIAnorad.histos_2D['Pm_vs_th_rq_PS']
 SIMC_pm120_h_PWIAXsec.set_nans() 
 set_inf(SIMC_pm120_h_PWIAXsec.bin_content)                        
+
+#%%
+xbin_range = np.arange(0,120,3)
+ybin_range = np.arange(0.04,.2,0.04)
+
+data_yield = []
+data_yield_err = []
+simc_yield = []
+simc_yield_err = []
+for xbin in xbin_range:
+    pm120_yield_proj = pm120_h.project_y(range = (xbin-3,xbin+3))
+    yi = pm120_yield_proj.sum(0,.2)
+    
+    simc_yield_proj = simcPlots_cut_FSIrad.histos_2D['Pm_vs_th_rq'].project_y(range = (xbin-3,xbin+3))
+    syi = simc_yield_proj.sum(0,.2)
+    
+    data_yield.append(yi[0])
+    data_yield_err.append(np.sqrt(yi[0])/yi[0])
+    simc_yield.append(syi[0])
+    simc_yield_err.append(np.sqrt(syi[0])/syi[0])
+   
+data_yield = []
+data_yield_err = []
+data_xsec = []
+simc_xsec = []
+for ybin in ybin_range:
+    pm120_yield_proj = pm120_h.project_x(range = (ybin-0.04,ybin+0.04))
+    yi = pm120_yield_proj.sum(0,180)
+    
+    pm120_xsec_proj = pm120_h_Xsec.project_x(range = (ybin-0.04,ybin+0.04))
+    xs = pm120_xsec_proj.sum(42,48)
+    
+    simc_xsec_proj = SIMC_pm120_h_FSIXsec.project_x(range = (ybin-0.04,ybin+0.04))
+    sxs = simc_yield_proj.sum(42,48)
+    
+        
+    data_yield.append(yi[0])
+    data_yield_err.append(np.sqrt(yi[0])/yi[0])
+    
+    data_xsec.append(xs[0])
+    simc_xsec.append(sxs[0])
+
+B.plot_exp(ybin_range,data_xsec,data_yield_err)
+B.plot_line(ybin_range,simc_xsec)
+
 
 #%% set up histogram projections
 

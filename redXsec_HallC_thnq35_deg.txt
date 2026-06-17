@@ -1,0 +1,3 @@
+#This datafile contains redXsec from Hall C Deuteron Experiment: E12-10-003
+#Units: pm_avg [GeV/c] :: redXsec [fm^3],   theta_nq = 35 +\- 5 deg 
+#!pm_avg[f,0]/   data_redXsec[f,1]/   data_redXsec_tot_err[f,2]/   stats_rel_err[f,3]/  kin_rel_err[f,4]/   norm_rel_err[f,5]   tot_rel_syst_err[f,6]/   tot_rel_err[f,7]/ 

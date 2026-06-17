@@ -126,7 +126,11 @@ class WCUT:
     def __repr__(self):
         return \
             f"Window cut: {self.name}; xmin = {self.xmin}, xmax = {self.xmax}\n"
-
+    
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write(f"Window cut: {self.name}; xmin = {self.xmin}, xmax = {self.xmax}\n")
+        return
 """
 VALUE CUT DEFINITION
 -----------------------------
@@ -188,7 +192,11 @@ class VCUT:
     
     def __repr__(self):
         return f"Value cut: {self.name}; value = {self.value}\n"
-
+    
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write(f"Value cut: {self.name}; value = {self.value}\n")
+        return
 #%% class for collimator cut
 ## tested - works well
 # on run 20851 74.3% of events pass hms coll_cut and 80.75% shms coll_cut
@@ -230,32 +238,75 @@ class coll_cut:
         
         if self.spec == 'HMS':
             if is_SIMC:
-                tar_x = data_obj.Branches['tar_x']
-                h_xptar = data_obj.Branches['h_xptar']
-                h_yptar = data_obj.Branches['h_yptar']
-                htar_z = data_obj.Branches['h_zv']
-                h_ytar = data_obj.Branches['h_ytar']
-                
-                h_th = get_list(
-                    db.retrieve(deutDB_name, 'HMS_Angle', 'RUN_LIST_UPDATED', 
-                        where= f"kin_study=\'{data_obj.kin_study}\'"+\
-                                f" AND setting=\'{data_obj.setting}\'",
-                                distinct=True))
-                
-                # calculate corr tarx
-                htarx_corr = tar_x - h_xptar*htar_z*np.cos(h_th*dtr)
-
-                	# Define Collimator (same as in HCANA)
-                hXColl = htarx_corr + h_xptar*168.   #in cm
-                hYColl = h_ytar + h_yptar*168.
-                n = hXColl.size
-                
-                self.xcoll = hXColl
-                self.ycoll = hYColl
-                self.n = n
-                self.nlim = self.hcoll_lim[:,0].size
-                self.xlim = self.hcoll_lim[:,0]
-                self.ylim = self.hcoll_lim[:,1]
+                try:
+                    if type(data_obj.many) == list:
+                        self.xcoll = {}
+                        self.ycoll = {}
+                        self.n = {}
+                        for m in data_obj.many:
+                            tar_x = data_obj.Branches[m]['tar_x']
+                            h_xptar = data_obj.Branches[m]['h_xptar']
+                            h_yptar = data_obj.Branches[m]['h_yptar']
+                            htar_z = data_obj.Branches[m]['h_zv']
+                            h_ytar = data_obj.Branches[m]['h_ytar']
+                            
+                            h_th = get_list(
+                                db.retrieve(deutDB_name, 'HMS_Angle', 'RUN_LIST_UPDATED', 
+                                    where= f"kin_study=\'{data_obj.kin_study}\'"+\
+                                            f" AND setting=\'{m}\'",
+                                            distinct=True))
+                        
+                            # calculate corr tarx
+                            htarx_corr = tar_x - h_xptar*htar_z*np.cos(h_th*dtr)
+    
+                            	# Define Collimator (same as in HCANA)
+                            hXColl = htarx_corr + h_xptar*168.   #in cm
+                            hYColl = h_ytar + h_yptar*168.
+                        
+                            # hXColl = data_obj.Branches['xcoll']   #in cm
+                            # hYColl = data_obj.Branches['ycoll']
+                            n = hXColl.size
+                            
+                            self.xcoll[m] = hXColl
+                            self.ycoll[m] = hYColl
+                            self.n[m] = n
+                            
+                        self.nlim = self.hcoll_lim[:,0].size
+                        self.xlim = self.hcoll_lim[:,0]
+                        self.ylim = self.hcoll_lim[:,1]
+                    else:
+                        raise(TypeError)
+                        
+                except TypeError:
+                    tar_x = data_obj.Branches['tar_x']
+                    h_xptar = data_obj.Branches['h_xptar']
+                    h_yptar = data_obj.Branches['h_yptar']
+                    htar_z = data_obj.Branches['h_zv']
+                    h_ytar = data_obj.Branches['h_ytar']
+                    
+                    h_th = get_list(
+                        db.retrieve(deutDB_name, 'HMS_Angle', 'RUN_LIST_UPDATED', 
+                            where= f"kin_study=\'{data_obj.kin_study}\'"+\
+                                    f" AND setting=\'{data_obj.setting}\'",
+                                    distinct=True))
+                    
+                    # calculate corr tarx
+                    htarx_corr = tar_x - h_xptar*htar_z*np.cos(h_th*dtr)
+    
+                    	# Define Collimator (same as in HCANA)
+                    hXColl = htarx_corr + h_xptar*168.   #in cm
+                    hYColl = h_ytar + h_yptar*168.
+                    
+                    # hXColl = data_obj.Branches['xcoll']   #in cm
+                    # hYColl = data_obj.Branches['ycoll']
+                    n = hXColl.size
+                    
+                    self.xcoll = hXColl
+                    self.ycoll = hYColl
+                    self.n = n
+                    self.nlim = self.hcoll_lim[:,0].size
+                    self.xlim = self.hcoll_lim[:,0]
+                    self.ylim = self.hcoll_lim[:,1]
 	  
             else:    
                 if many:
@@ -323,8 +374,8 @@ class coll_cut:
                     self.ycoll = {}
                     self.n = {}
                     for m in self.many:
-                        xc = data_obj.Branches[m]['H.extcor.xsieve']
-                        yc = data_obj.Branches[m]['H.extcor.ysieve']
+                        xc = data_obj.Branches[m]['P.extcor.xsieve']
+                        yc = data_obj.Branches[m]['P.extcor.ysieve']
                         nc = xc.size
                         
                         self.xcoll[m] = xc
@@ -384,16 +435,22 @@ class coll_cut:
             print(f'{passed:.2f}% passed\n')
 
     def __repr__(self):
-        return f"{self.spec} collimator cut\n"
-
+        return f"{self.spec} collimator cut ON\n"
+    
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write(f"{self.spec} collimator cut ON\n")
+        return
 #%% class for current cut
 
 ##checked for interval accuracy by manually determining good/bad intervals
 # and checking for their inclusion in .intervals after cut.
 # -- added many functionality to handle multiple runs
+# -- added cut_lim options for tighter cuts, options are: 'std' --> >5muA and
+#       'tgt_boil' --> cuts 3muA around max curr
 
 class current_cut:
-    def __init__(self, data_obj, current='BCM4A',many=False):
+    def __init__(self, data_obj, current='BCM4A',many=False,cut_lim = 'std'):
         if many:
             self.many = data_obj.many
             
@@ -405,14 +462,27 @@ class current_cut:
                 evnum = data_obj.Branches[m]['evNumber']
                 curr = data_obj.Branches[m][f'P.{current}.scalerCurrent']
                 
-                # hc = B.histo(curr,range=(0,100),bins=100)
-                # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
-                # max_c = hc.bin_center[max_loc]
+                # cut_lim options: std, tgt_boil
+                if cut_lim == 'tgt_boil':
+                    # read avg current
+                    # avg_current = get_list(db.retrieve('deuteron_db.db', 
+                    #                           f'{current}_current', 
+                    #                           'RUN_LIST_UPDATED', 
+                    #                           where = f"run=\'{m}\'"))
+                    hc = B.histo(curr,range=(0,100),bins=100)
+                    max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
+                    max_c = hc.bin_center[max_loc]  
 
-                # self.c_cut_min[m] = max_c - 5.
-                self.c_cut_min[m] = 5. 
-                self.c_cut_max[m] = np.inf
-                
+                    self.c_cut_min[m] = max_c[0] - 5.
+                    self.c_cut_max[m] = max_c[0] + 5.
+                    
+                elif cut_lim == 'std':
+                    self.c_cut_min[m] = 5.
+                    self.c_cut_max[m] = np.inf
+                else:
+                    print('Please specify current cut limits.')
+                    print('Options: "std", "tgt_boil"')
+                    
                 self.evNumber[m] = evnum 
                 self.current[m] = curr
                     
@@ -421,16 +491,20 @@ class current_cut:
             self.evNumber = data_obj.Branches['evNumber'] 
             self.current = data_obj.Branches[f'P.{current}.scalerCurrent']
             
-            # get mean and std deviation to define cut width
-            #mean = np.mean(self.current)
-            # the cut is some sigma away for the maximum
-            # hc = B.histo(self.current,range=(0,100),bins=100)
-            # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
-            # max_c = hc.bin_center[max_loc]
-            
-            # self.c_cut_min = max_c - 5.
-            self.c_cut_min = 5.
-            self.c_cut_max = np.inf
+            if cut_lim == 'tgt_boil':
+                hc = B.histo(self.current,range=(0,100),bins=100)
+                max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
+                max_c = hc.bin_center[max_loc]  
+
+                self.c_cut_min = max_c[0] - 3.
+                self.c_cut_max = max_c[0] + 3.
+                
+            elif cut_lim == 'std':
+                self.c_cut_min = 5.
+                self.c_cut_max = np.inf
+            else:
+                print('Please specify current cut limits.')
+                print('Options: "std", "tgt_boil"')
         
         self.cut_name = f'{current}_cut'
   
@@ -511,13 +585,25 @@ class current_cut:
 
     def __repr__(self):
             return f"{self.cut_name}\n"
-
+    
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write(f"{self.cut_name}\n")
+        return
 #%% z_tar difference cut
 # cuts around max zdiff
 # tested 
 class ztar_cut:
     def __init__(self,data_obj,many=False,is_SIMC=False):
         if is_SIMC:
+            if many:
+                self.many = data_obj.many
+                self.hms_ztar = {}
+                self.shms_ztar = {}
+                for m in self.many:
+                    self.hms_ztar[m] = data_obj.Branches[m]['h_zv']
+                    self.shms_ztar[m] = data_obj.Branches[m]['e_zv']
+            else:
                 self.many = False
                 self.hms_ztar = data_obj.Branches['h_zv']
                 self.shms_ztar = data_obj.Branches['e_zv']
@@ -545,11 +631,12 @@ class ztar_cut:
                 ztar_diff = self.hms_ztar[m] - self.shms_ztar[m]
                 
                 hc = B.histo(ztar_diff,range=(-5.,5.),bins=50)
-                max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
-                max_c = hc.bin_center[max_loc]  
+                hc.fit(plot_fit=False,print_res=False)
+                # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
+                # max_c = hc.bin_center[max_loc]  
                 
-                cmin = max_c - 2.0
-                cmax = max_c + 2.0
+                cmin = hc.mean.value - 2.0
+                cmax = hc.mean.value + 2.0
                 
                 cut = WCUT(cmin,cmax,name='ztar_diff_cut')
                 r = cut(ztar_diff)
@@ -562,11 +649,12 @@ class ztar_cut:
             ztar_diff = self.hms_ztar - self.shms_ztar
             
             hc = B.histo(ztar_diff,range=(-5.,5.),bins=50)
-            max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
-            max_c = hc.bin_center[max_loc]  
+            hc.fit(plot_fit=False,print_res=False)
+            # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
+            # max_c = hc.bin_center[max_loc]  
             
-            self.cut_min = max_c - 2.0
-            self.cut_max = max_c + 2.0
+            self.cut_min = hc.mean.value - 2.0
+            self.cut_max = hc.mean.value + 2.0
             self.cut = WCUT(self.cut_min,self.cut_max,name='ztar_diff_cut')
             self.res = self.cut(ztar_diff)
         
@@ -581,8 +669,11 @@ class ztar_cut:
         
     def __repr__(self):
             return "ztar_diff_cut\n"
-
     
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write("ztar_diff_cut\n")
+        return   
 #%% coincidence time cut - corrects for offset
 
 class CTime_cut:
@@ -599,22 +690,26 @@ class CTime_cut:
 
     def get_coinTimeOffset(self,coinTime):    
         CTime = coinTime  
-        CTime_histo_0 = B.histo(CTime,range=(-100,100),bins=200,
+        CTime_histo_0 = B.histo(CTime,range=(0,1000),bins=1000,
                                   title = 'CTime no cuts')
-        CTime_histo_0.fit(plot_fit=False,print_res=False)
-        mu_0 = CTime_histo_0.mean.value    
-        sigma_0 = abs(CTime_histo_0.sigma.value)
+        # CTime_histo_0.fit(plot_fit=False,print_res=False)
+        # mu_0 = CTime_histo_0.mean.value  
+        # sigma_0 = abs(CTime_histo_0.sigma.value)
         # print(mu_0,sigma_0)
+        max_loc = np.where(CTime_histo_0.bin_content ==\
+                           max(CTime_histo_0.bin_content))[0]
+        max_c = CTime_histo_0.bin_center[max_loc][0]
 
-        x_min = mu_0 - 2.*sigma_0
-        x_max = mu_0 + 2.*sigma_0
+        x_min = max_c - 10.
+        x_max = max_c + 10.
         
         CTime_histo = B.histo(CTime,range=(x_min,x_max),bins=200,
                                   title = 'CTime no cuts')    
-        CTime_histo.fit(plot_fit=False,print_res=False)
+        CTime_histo.fit(max_c-5,max_c+5,plot_fit=False,print_res=False)
         mu = CTime_histo.mean.value    
         CTime_corr = CTime - mu
         
+        # B.pl.figure()
         # CTime_histo_0.plot()
         # B.pl.figure()
         # CTime_histo.plot()
@@ -627,6 +722,7 @@ class CTime_cut:
         if self.many:
             self.cut = {}
             self.res = {}
+            self.CTime_corr = {}
             for m in self.many:
                 coinTime_corr = self.get_coinTimeOffset(self.coinTime[m]) 
                 
@@ -635,10 +731,20 @@ class CTime_cut:
                 
                 self.cut[m] = cut
                 self.res[m] = res
+                self.CTime_corr[m] = coinTime_corr
+                
+                # h = B.histo(coinTime_corr,range=(-5,5),bins=200)
+                # h1 = B.histo(coinTime_corr[res],range=(-5,5),bins=200)
+                # B.pl.figure()
+                # h.plot()
+                # h1.plot()
+                
         else:
-            coinTime_corr = self.get_coinTimeOffset(self.coinTime)           
+            coinTime_corr = self.get_coinTimeOffset(self.coinTime)
+            
             self.cut = WCUT(-2.,2.,name='epCoinTime_cut')
             self.res = self.cut(coinTime_corr)
+            self.CTime_corr = coinTime_corr
         
         return self.res
     
@@ -652,7 +758,11 @@ class CTime_cut:
         
     def __repr__(self):
             return 'epCoinTime_cut\n'
-        
+    
+    def report(self, fname=''):
+        with open(fname,'a') as f:
+            f.write('epCoinTime_cut\n')
+        return
 #%% Commonly used cuts are defined here
 
 """
@@ -670,12 +780,20 @@ HCANA_names = {'hms_delta':'H.gtr.dp','shms_delta':'P.gtr.dp',
                'shms_calPID':'P.cal.etottracknorm',
                'Q2_cut':'P.kin.primary.Q2',
                'xbj_cut':'P.kin.primary.x_bj',
-               'Em_cut_hc':'H.kin.secondary.emiss'}
+               'Em_cut_hc':'H.kin.secondary.emiss',
+               'noEDTM':'T.coin.pEDTM_tdcTimeRaw',
+               'W_cut':'P.kin.primary.W',
+               'xbj_cut':'P.kin.primary.x_bj'}
 
 SIMC_names = {'hms_delta':'h_delta','shms_delta':'e_delta',
                'hms_xptar':'h_xptar','hms_yptar':'h_yptar',
                'shms_xptar':'e_xptar','shms_yptar':'e_yptar',
-               'Em_cut':'Em','Q2_cut':'Q2','Em_cut_hc':'Em'}
+               'Em_cut':'Em','Q2_cut':'Q2','Em_cut_hc':'Em',
+               'W_cut':'W'}
+
+#no edtm cut
+noEDTM = VCUT(0.,name='noEDTM')
+
 #whole acceptance
 hms_delta = WCUT(-8.,8.,name='hms_delta')
 shms_delta = WCUT(-10.,22.,name='shms_delta')
@@ -716,10 +834,14 @@ Em_cut_hc = WCUT(-0.01,0.01,name='Em_cut_hc')
 # Ztar_diff = WCUT()
 # Momentum Transfer Squared
 Q2_cut = WCUT(4.0,5.0,name='Q2_cut')
+# xBj cut for heep
+xbj_cut = WCUT(0.95,1.05,name='xbj_cut')
+# invariant mass (W) cut for heep
+W_cut = WCUT(0.938,0.954,name='W_cut')
 
 event_selection_cuts = [hms_delta,shms_delta,shms_calPID,Em_cut,Q2_cut]
 
-heep_event_selection_cuts = [hms_delta,shms_delta,shms_calPID,Em_cut_hc]
+heep_event_selection_cuts = [hms_delta,shms_delta,Em_cut_hc,shms_calPID]
 
 event_selection_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
 

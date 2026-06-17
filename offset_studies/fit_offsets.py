@@ -97,28 +97,28 @@ pmy6 = B.get_data(f, 'step6_pmy')
 
 # corr_factor = 1-(corr/pf_nom)
 
-# B.pl.figure()
-# dp_dPf = B.plot_exp(dp, dthp_5, marker='+',markersize=10,
-#                     label = 'dthp')
-# lfit_thp = B.linefit(dp[:4], dthp_5[:4])
-# lfit_thp.plot()
-# B.pl.title('dthp')
-# han, lab = fit_legend(lfit_thp)
-# B.pl.legend(handles=han,labels=lab,loc='best',fontsize='large')
+B.pl.figure()
+dp_dPf = B.plot_exp(dp, dthp_5, marker='+',markersize=10,
+                    label = 'dthp')
+lfit_thp = B.linefit(dp[:4], dthp_5[:4])
+lfit_thp.plot()
+B.pl.title('dthp')
+han, lab = fit_legend(lfit_thp)
+B.pl.legend(handles=han,labels=lab,loc='best',fontsize='large')
 
-# corr = [lfit_thp(-8),lfit_thp(-4),lfit_thp(0),lfit_thp(4),dthp_5[4],dthp_5[5]]
+corr = [lfit_thp(-8),lfit_thp(-4),lfit_thp(0),lfit_thp(4),dthp_5[4],dthp_5[5]]
 
-# dthp_dthe_1 = kf_nom*(kf_nom - Eb*np.cos(the_nom))
-# dthp_dthe_2 = Eb**2 - 2.*Eb*kf_nom*np.cos(the_nom) + kf_nom**2
-# dthp_dthe = dthp_dthe_1/dthp_dthe_2
+dthp_dthe_1 = kf_nom*(kf_nom - Eb*np.cos(the_nom))
+dthp_dthe_2 = Eb**2 - 2.*Eb*kf_nom*np.cos(the_nom) + kf_nom**2
+dthp_dthe = dthp_dthe_1/dthp_dthe_2
 
-# corr_offset = corr/dthp_dthe
+corr_offset = corr/dthp_dthe
 
 #### pmx, pmy
 
-pmx_plot, pmx_corr = plot_n_fit(dp, pmx6, title='Pmx')
-pmy_plot, pmy_corr = plot_n_fit(dp, pmy6, title='Pmy')
+# pmx_plot, pmx_corr = plot_n_fit(dp, pmx6, title='Pmx')
+# pmy_plot, pmy_corr = plot_n_fit(dp, pmy6, title='Pmy')
 
-th_corr = pmx_corr[:4]/pf_nom
+# th_corr = pmx_corr[:4]/pf_nom
 
-ph_corr = pmy_corr[:4]/pf_nom
+# ph_corr = pmy_corr[:4]/pf_nom

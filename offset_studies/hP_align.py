@@ -293,16 +293,13 @@ for r in RUN.many:
         br = RUN.Branches[r][C.HCANA_names[cut.name]]
         cut_array = cut(br)
         cut.stats()
-        c_list.append(cut_array)
-    
-    # add collimator cut
-    hxc = RUN.Branches[r]['H.extcor.xsieve']
-    hyc = RUN.Branches[r]['H.extcor.ysieve']
-    
-    hcoll_cut = C.coll_cut(hxc, hyc, spec='HMS')
-    c_list.append(hcoll_cut) 
-    
+        c_list.append(cut_array) 
     cuts_to_apply[r] = c_list
+    
+hcoll_cut = C.coll_cut(RUN,spec='HMS',many=True)
+hcoll_cut_arrays = hcoll_cut()
+for r in RUN.many:
+    cuts_to_apply[r].append(hcoll_cut_arrays[r])
     
 all_cuts = {}
 for r in RUN.many:

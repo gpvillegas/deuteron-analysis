@@ -1,0 +1,235 @@
+#--------------------------------------------
+#------Basic Input Cuts Parameter File-------
+#--------------------------------------------
+
+#------TURN BASIC CUTS FLAG ON/OFF------
+# TRUE (ON) = 1, FALSE (OFF) = 0
+
+
+#-------TRACKING EFFICIENCY CUTS (MAY BE STRICTER THAN DATA-ANALYSIS CUTS)-----
+
+
+#--------------------
+# HMS tracking eff. = tracks_DID_passed / tracks_SHOULD_have_passed
+# tracks_DID_passed = tracks_SHOULD_have_passed && hdc_ntrk_cut_flag
+# tracks_SHOULD_have_passed = (hScinGood_cut_flag) && (hcer_cut_flag) && (hetotnorm_cut_flag) && (hBeta_notrk_cut_flag) 
+#--------------------
+
+# flag that enables a cut on the number of tracks for tracking eff. calculations (DO NOT TOUCH ! ! !)  
+hdc_ntrk_cut_flag = 1
+
+# minimum number of tracks required
+c_hdc_ntrk_min = 1
+
+# fiducial scintillator region cut (search "goodscinhit" defined in /hcana/src/THcHodoscope.cxx)
+hScinGood_cut_flag = 1
+
+# HMS Cherenkov Total Number of Photo-Electrons (search "npeSum" in /hcana/src/THcCherenkov.cxx)
+hcer_cut_flag = 1
+c_hnpeSum_min = 0.
+c_hnpeSum_max = 0.5
+
+# HMS Calorimeter Total Energy / Spec. Central Momentum (search "etotnorm" in /hcana/src/THcShower.cxx)
+hetotnorm_cut_flag = 1
+c_hetotnorm_min = 0.
+c_hetotnorm_max = 0.6
+
+# HMS Beta (p/E) Calculated from Scintillator Hits (without using Tracking Info) (search "betanotrack" in /hcana/src/THcHodoscope.cxx)
+hBeta_notrk_cut_flag = 1
+c_hBetaNtrk_min = 0.5
+c_hBetaNtrk_max = 1.5
+
+
+#--------------------
+# SHMS tracking eff. = tracks_DID_passed / tracks_SHOULD_have_passed
+# tracks_DID_passed = tracks_SHOULD_have_passed && pdc_ntrk_cut_flag
+# tracks_SHOULD_have_passed = (pScinGood_cut_flag) && (pngcer_cut_flag) && (petotnorm_cut_flag) && (pBeta_notrk_cut_flag) 
+#--------------------
+
+# flag that enables a cut on the number of tracks for tracking eff. calculations (DO NOT TOUCH ! ! !)  
+pdc_ntrk_cut_flag = 1
+
+# minimum number of tracks required 
+c_pdc_ntrk_min = 1
+
+# fiducial scintillator region cut (search "goodscinhit" defined in /hcana/src/THcHodoscope.cxx)
+pScinGood_cut_flag = 1
+
+# SHMS Noble Gas Cherenkov Total Number of Photo-Electrons (search "npeSum" in /hcana/src/THcCherenkov.cxx)
+pngcer_cut_flag = 1
+c_pngcer_npeSum_min = 1.0
+c_pngcer_npeSum_max = 100.
+
+# SHMS Heavy Gas Cherenkov (will NOT be used by CaFe experiment)
+phgcer_cut_flag = 0
+c_phgcer_npeSum_min = 0.
+c_phgcer_npeSum_max = 1.5
+
+# SHMS Calorimeter Total Energy / Spec. Central Momentum (search "etotnorm" in /hcana/src/THcShower.cxx)
+petotnorm_cut_flag = 1
+c_petotnorm_min = 0.8
+c_petotnorm_max = 1.3
+
+# SHMS Beta (p/E) Calculated from Scintillator Hits (without using Tracking Info) (search "betanotrack" in /hcana/src/THcHodoscope.cxx)
+pBeta_notrk_cut_flag = 1
+c_pBetaNtrk_min = 0.5
+c_pBetaNtrk_max = 1.5
+
+
+
+#---------DATA/SIMC ANALYSIS CUTS----------
+
+# =:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:
+#
+#  STANDARD GENERIC CUTS for A(e,e'p) e: SHMS, p: HMS
+#
+# =:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:
+
+#---- Coincidence Time Cut -----
+
+# electron-Proton main coincidence time cut [ns] 
+ePctime_cut_flag = 1
+ePctime_cut_min = -2.5
+ePctime_cut_max = 2.5
+
+# accidental window selection (right of main coin. peak) choose additional events to the right of accidentals for MF,SRC to lower random stats
+ePctime_cut_min_R = 2.6
+ePctime_cut_max_R = 10.1
+
+# accidental window selection (left of main coin. peak)
+ePctime_cut_min_L = -2.6
+ePctime_cut_max_L = -10.1
+
+
+#------PID Cuts------
+
+# (SHMS PID) Calorimeter Total Energy Normalized By Track Momentum
+petot_trkNorm_pidCut_flag = 1
+cpid_petot_trkNorm_min = 0.8
+cpid_petot_trkNorm_max = 1.3
+
+# (SHMS PID) Noble Gas Cherenkov Total Number of Photo-Electrons
+pngcer_pidCut_flag = 0
+cpid_pngcer_npeSum_min = 1.5
+cpid_pngcer_npeSum_max = 100.
+
+# (SHMS PID) Heavy Gas Cherenkov (Pi / K Separation) --not needed for CaFe
+phgcer_pidCut_flag = 0
+cpid_phgcer_npeSum_min = 0.0
+cpid_phgcer_npeSum_max = 1.5
+
+# (SHMS PID) Number of Trakcs (apply a cut on data analysis for track study, until we find how to deal with multiple tracks selection)
+pntrack_cut_flag = 0
+pntracks = 1
+
+# (HMS PID) Calorimeter Total Energy Normalized By Track Momentum
+hetot_trkNorm_pidCut_flag = 0
+cpid_hetot_trkNorm_min = 0.
+cpid_hetot_trkNorm_max = 0.6
+
+# (HMS PID) Gas Cherenkov
+hcer_pidCut_flag = 0
+cpid_hcer_npeSum_min = 0.
+cpid_hcer_npeSum_max = 0.5
+
+
+#------Acceptance Cuts------
+
+# hadron arm momentum acceptance, Delta [%] 
+hdelta_cut_flag = 1
+c_hdelta_min = -10.
+c_hdelta_max = 10.
+
+# hadron out-of-plane angular range, xptar [rad]
+hxptar_cut_flag = 0
+c_hxptar_min = -0.06
+c_hxptar_max = 0.06
+
+# hadron in-plane angular range, yptar [rad]
+hyptar_cut_flag = 0
+c_hyptar_min = -0.035
+c_hyptar_max = 0.035
+
+# HMS colliamtor cut (can be used as alternative to xptar,yptar cuts)
+hmsCollCut_flag = 1
+
+# electron arm momentum acceptance, Delta [%] 
+edelta_cut_flag = 1
+c_edelta_min = -10.
+c_edelta_max = 22.
+
+# electron out-of-plane angular range, xptar [rad]
+exptar_cut_flag = 0
+c_exptar_min = -0.04
+c_exptar_max = 0.04
+
+# electron in-plane angular range, yptar [rad]
+eyptar_cut_flag = 0
+c_eyptar_min = -0.024
+c_eyptar_max = 0.024
+
+# SHMS colliamtor cut (can be used as alternative to xptar,yptar cuts)
+shmsCollCut_flag = 1
+
+# Z-Reaction Vertex Difference, [cm]
+ztarDiff_cut_flag = 0
+c_ztarDiff_min = -2.
+c_ztarDiff_max = 2.
+
+
+# =:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:
+#
+#  DEUTERON EXP. - SPECIFIC KINEMATIC CUTS e: SHMS, p: HMS
+#
+# =:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:=:
+
+#-----Kinematics Cuts-----
+
+# H(e,e'p) Elastics Kinematics Cuts
+
+# NOTE: Provided the '*_flag = 1', the cuts below are applied IF-AND-ONLY-IF user sets analysis_cut=="heep_coin" (see run_cafe_prod.sh)
+# not all of these cuts may necessarily be turned ON. Leave to the user discretion.
+
+# 4-Momentum Transfers [GeV^2]
+Q2_heep_cut_flag = 0
+c_heep_Q2_min = 4
+c_heep_Q2_max = 5
+
+# x-Bjorken
+xbj_heep_cut_flag = 0
+c_heep_xbj_min = 0.8
+c_heep_xbj_max = 1.2
+
+# Missing Energy [GeV]
+# this cut will NOT be activated with analysis_cut=="heep_singles"
+Em_heep_cut_flag = 1
+c_heep_Em_min = -0.06
+c_heep_Em_max = 0.06
+
+# Invariant Mass, W [GeV]
+W_heep_cut_flag = 1
+c_heep_W_min = 0.85
+c_heep_W_max = 1.05
+
+# Missing Mass, MM [GeV]
+# this cut will NOT be activated with analysis_cut=="heep_singles"
+MM_heep_cut_flag = 0  
+c_heep_MM_min = -0.15
+c_heep_MM_max = 0.15
+
+
+#---- Deuteron-Specific d(e,e'p) Kinematic Cuts -----
+
+# NOTE: Cuts below are applied IF-AND-ONLY-IF user sets analysis_cut=="MF" (see run_cafe_prod.sh)
+# not all of these cuts may necessarily be turned ON. Leave to the user discretion.
+
+# 4-Momentum Transfers [GeV^2]
+Q2_deep_cut_flag = 1
+c_deep_Q2_min = 4.0
+c_deep_Q2_max = 5.0
+
+
+# Missing Energy [GeV] (provided *flag*=1, this cut will be applied IF-AND-ONLY-IF the deuterium target is used)
+Em_deep_cut_flag = 1
+c_deep_Em_min = -0.02
+c_deep_Em_max = 0.06

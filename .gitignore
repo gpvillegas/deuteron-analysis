@@ -1,0 +1,8 @@
+*.data
+deut_laget/*
+deut_laget/pfsi/grid.bin
+deut_laget/pwia/grid.bin
+yield_n_xsec/HallA_data/*
+yield_n_xsec/HallC17_data/*
+yield_n_xsec/jml_theory_xsec/deut_laget/pwia/grid.bin
+yield_n_xsec/jml_theory_xsec/deut_laget/pfsi/grid.bin
