@@ -1,1 +1,0 @@
-yield_n_xsec/average_kin/bin_info2.py
