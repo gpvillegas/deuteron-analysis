@@ -1,0 +1,5 @@
+#This table contains the kinematics derivatives, where ds_dkin is the derivative of the cross section
+#with respect to the kinematic variable in units of %/mrad or %/MeV
+#There are also the relative systematic errors of individual kinematic variables, and the total error added in quadrature
+#to see which is the dominant source of the systematics errors
+#!ib[i,0]/  pm_bin[f,1]/   thnq_bin[f,2]/   ds_dthe[f,3]/   ds_dphe[f,4]/   ds_def[f,5]/   ds_dthp[f,6]/   ds_dphp[f,7]/  ds_dthb[f,8]/   ds_dphb[f,9]/    ds_dE[f,10]/    sig_the[f,11]/   sig_phe[f,12]/   sig_ef[f,13]/   sig_thp[f,14]/   sig_php[f,15]/  sig_thb[f,16]/   sig_phb[f,17]/    sig_E[f,18]/    sig_the_thp[f,19]/    sig_the_Ef[f,20]/     sig_the_Eb[f,21]/      sig_thp_Ef[f,22]/      sig_thp_Eb[f,23]/      sig_Ef_Eb[f,24]/      sig_tot[f,25]/ 

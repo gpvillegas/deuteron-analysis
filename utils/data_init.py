@@ -92,7 +92,7 @@ def get_eff_norm(run,run_type='coin'):
                         'RUN_LIST_UPDATED', where = f"run=\'{run}\'")[0]
         
         # proton transmission factor
-        pTr = 0.9320 # see PA study
+        pTr = 0.9530 # see PA study
         
         norm = h_teff*p_teff*lt*tgtBoil*pTr
     elif run_type == 'singles':
