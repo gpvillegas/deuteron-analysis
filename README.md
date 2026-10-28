@@ -1,1 +1,3 @@
-Analysis codes in python for the deuteron experiment. The codes rely on the tools in /utils.
+# Deuteron Electro-disintegration Analysis
+Analysis codes in python for the deuteron electron-disintegration experiment. The codes rely on the tools in /utils.
+The analysis includes many studies on normalization factors, offset determination, systematic uncertainties, etc...
