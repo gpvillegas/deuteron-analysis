@@ -1,0 +1,7 @@
+CUTS REPORT
+Window cut: hms_delta; xmin = -8.0, xmax = 8.0
+Window cut: shms_delta; xmin = -10.0, xmax = 22.0
+Window cut: Em_cut; xmin = -0.04, xmax = 0.04
+Window cut: Q2_cut; xmin = 4.0, xmax = 5.0
+HMS collimator cut ON with 1.0 scale
+ztar_diff_cut with bounds +/- 2.0

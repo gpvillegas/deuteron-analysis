@@ -1,0 +1,7 @@
+#####################################
+# BCM CALIBRATION RANGES 1 & 2 
+# Based on XEM2 BCM Calib Run 20277
+#####################################
+#! BCM1_Gain[f,0]/ BCM1_Gain_err[f,1]/ BCM1_Offset[f,2]/ BCM1_Offset_err[f,3]/ BCM2_Gain[f,4]/ BCM2_Gain_err[f,5]/ BCM2_Offset[f,6]/ BCM2_Offset_err[f,7]/ BCM4A_Gain[f,8]/ BCM4A_Gain_err[f,9]/ BCM4A_Offset[f,10]/ BCM4A_Offset_err[f,11]/ BCM4C_Gain[f,12]/ BCM4C_Gain_err[f,13]/ BCM4C_Offset[f,14]/ BCM4C_Offset_err[f,15]/
+5670.93 17.95 1046.47 667.49 5543.00 17.54 2.48887e+05 652.58 9568.14 30.28 -3695.81 1126.17 5264.40 16.66 -1786.17 619.62
+5557.82 18.20 3657.77 648.07 5431.28 17.78 2.51432e+05 633.24 9366.67 30.67 932.16 1092.17 5150.96 16.87 817.99 600.62

@@ -2,7 +2,28 @@
 deut_laget/*
 deut_laget/pfsi/grid.bin
 deut_laget/pwia/grid.bin
-yield_n_xsec/HallA_data/*
-yield_n_xsec/HallC17_data/*
-yield_n_xsec/jml_theory_xsec/deut_laget/pwia/grid.bin
-yield_n_xsec/jml_theory_xsec/deut_laget/pfsi/grid.bin
+MAIN ANALYSIS/yield_n_xsec/HallA_data/*
+MAIN ANALYSIS/yield_n_xsec/HallC17_data/*
+MAIN ANALYSIS/yield_n_xsec/jml_theory_xsec/deut_laget/pwia/grid.bin
+MAIN ANALYSIS/yield_n_xsec/jml_theory_xsec/deut_laget/pfsi/grid.bin
+__pycache__
+bin_info2.py
+deForest_Xsec.py
+deut_laget
+get_Xsec_err.py
+interpolate_ff.py
+Laget_Xsec_fp_1.so
+load_data_init.py
+R_Barlow.py
+differ.in
+differ.out
+differ_err
+analyze_differ.py
+database_operations.py
+GetFF.py
+run_command.py
+cut_handler.py
+data_init.py
+get_deep_Xsec.py
+hcana_dict.py
+root_util.py

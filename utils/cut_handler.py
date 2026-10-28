@@ -9,8 +9,12 @@ Created on Tue Jan 28 14:39:35 2025
 import numpy as np
 import LT.box as B
 import database_operations as db
+import data_init as D
+import os
+from matplotlib import colormaps as cmp
+# import re
 
-#%%
+#%% WINDOW CUT AND VALUE CUT
 """
 Tests for later:
     -Check class by comparing doing cuts with if statements and the old way.
@@ -157,6 +161,8 @@ class VCUT:
         
     def __call__(self, val):
         self.eval = val == self.value
+        cut_high = val > self.value
+        cut_low = self.value > val  
         #handle nans
         if np.isscalar(val):
             if val == np.nan:
@@ -173,6 +179,8 @@ class VCUT:
             self.tot = self.eval.size
             self.n_pass = self.eval.sum()
             self.n_reject = (~self.eval).sum()
+            self.n_high = cut_high.sum()
+            self.n_low = cut_low.sum()
             return self.eval
     
     def stats(self):
@@ -185,9 +193,13 @@ class VCUT:
         if tot > 0.:
             frac = self.n_pass/tot*100
             frac_drop = self.n_reject/tot*100
+            frac_high = self.n_high/tot*100
+            frac_low = self.n_low/tot*100
         print(f'{self.name} evaluated {tot} times')
         print(f'{frac:.2f}% passed')
         print(f'{frac_drop:.2f}% rejected')
+        print(f'{frac_high:.2f}% above the cut: {self.n_high} events')
+        print(f'{frac_low:.2f}% below the cut: {self.n_low} events')
 
     
     def __repr__(self):
@@ -217,22 +229,25 @@ def get_list(db_res, index = 0):
         return l[0]
 
 class coll_cut:
-    def __init__(self,data_obj,spec='HMS',many=False,is_SIMC=False):
+    def __init__(self,data_obj,spec='HMS',many=False,is_SIMC=False,scale=1.0):
         if many:
             self.many = data_obj.many
         else:
             self.many = False
+        
+        # Scale of collimator cut
+        self.scale = scale
             
         self.spec = spec
         
         #HMS collimator limits
-        self.hcoll_lim = np.array([(-2.2875,11.646),(2.2875,11.646),
+        self.hcoll_lim = self.scale*np.array([(-2.2875,11.646),(2.2875,11.646),
                                    (4.575,5.823),(4.575,-5.823),
                                    (2.2875,-11.646),(-2.2875,-11.646),
                                    (-4.575,-5.823),(-4.575,5.823),
                                    (-2.2875,11.646)])
         #SHMS collimator limits
-        self.pcoll_lim = np.array([(-4.25,12.5),(4.25,12.5),(8.5,6.25),
+        self.pcoll_lim = self.scale*np.array([(-4.25,12.5),(4.25,12.5),(8.5,6.25),
                                    (8.5,-6.25),(4.25,-12.5),(-4.25,-12.5),
                                    (-8.5,-6.25),(-8.5,6.25),(-4.25,12.5)])
         
@@ -435,11 +450,11 @@ class coll_cut:
             print(f'{passed:.2f}% passed\n')
 
     def __repr__(self):
-        return f"{self.spec} collimator cut ON\n"
+        return f"{self.spec} collimator cut ON with {self.scale} scale\n"
     
     def report(self, fname=''):
         with open(fname,'a') as f:
-            f.write(f"{self.spec} collimator cut ON\n")
+            f.write(f"{self.spec} collimator cut ON with {self.scale} scale\n")
         return
 #%% class for current cut
 
@@ -485,7 +500,8 @@ class current_cut:
                     
                 self.evNumber[m] = evnum 
                 self.current[m] = curr
-                    
+                
+                
         else:
             self.many = False
             self.evNumber = data_obj.Branches['evNumber'] 
@@ -496,8 +512,8 @@ class current_cut:
                 max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
                 max_c = hc.bin_center[max_loc]  
 
-                self.c_cut_min = max_c[0] - 3.
-                self.c_cut_max = max_c[0] + 3.
+                self.c_cut_min = max_c[0] - 5.
+                self.c_cut_max = max_c[0] + 5.
                 
             elif cut_lim == 'std':
                 self.c_cut_min = 5.
@@ -572,6 +588,58 @@ class current_cut:
                         
         return self.res
     
+    def scaler(self,scaler_var,cut_array):
+        # this method has to be called after calling the current cut by itself, 
+        # so that the boolean cut arrays are defined.
+        # size of scaler array
+        n = scaler_var.size
+        # array positions in scaler array
+        pos = np.arange(0,n,1)
+        # intervals made from boolean array, intervals [True,False] or 
+        # [False,True] or [False, False] show ranges where scaler counts should
+        # not be counted 
+        
+        inter = np.vstack((cut_array,
+                           np.roll(cut_array,-1)))
+        intervals = inter.T[:-1] # do not need last one [Last, First]
+        
+        j=0
+        pos_intervals = []
+        t = [-1,-1]
+        for i in intervals:
+            if i[0] == True and i[1] == False or i[0] == False and i[1] == True\
+                or j==0 and i[0] == False:
+                # get the positions in the scaler array that correspond
+                # to [False,True] or [True,False] (the start and end of a
+                # bad current period)
+                if i[0] == True:
+                    t[0] = int(pos[j])
+                elif j==0 and i[0] == False:
+                    t[0] = int(pos[j])
+                elif j != 0 and i[0] == False:
+                    t[1] = int(pos[j]) +1
+            # here we are basically transforming the [True,False], [False,True]
+            # intervals into intervals of their positions, saving them in
+            # 'pos_inter'
+            if t[0]!= -1 and t[1] != -1:
+                pos_intervals.append(t)
+                t = [-1,-1]
+            j+=1
+        
+        # loop over all 'pos_intervals' and add up all scaler events counted
+        # during those intervals, these are the bad scaler events to be 
+        # subtracted
+        bad_scaler_var = 0
+        for i in pos_intervals:
+            try:
+                bad_scaler_var += scaler_var[i[1]] - scaler_var[i[0]]
+            except IndexError:
+                bad_scaler_var += scaler_var[i[1]-1] - scaler_var[i[0]] 
+        
+        newScalerVarTot = scaler_var[-1] - bad_scaler_var 
+        
+        return newScalerVarTot
+    
     def stats(self):
         if self.many:
             for m in self.many:
@@ -594,7 +662,8 @@ class current_cut:
 # cuts around max zdiff
 # tested 
 class ztar_cut:
-    def __init__(self,data_obj,many=False,is_SIMC=False):
+    def __init__(self,data_obj,many=False,is_SIMC=False,cut_bounds=2.0):
+        self.cut_bounds = cut_bounds
         if is_SIMC:
             if many:
                 self.many = data_obj.many
@@ -631,12 +700,12 @@ class ztar_cut:
                 ztar_diff = self.hms_ztar[m] - self.shms_ztar[m]
                 
                 hc = B.histo(ztar_diff,range=(-5.,5.),bins=50)
-                hc.fit(plot_fit=False,print_res=False)
+                hc.fit(plot_fit=False) ## maybe modify LTbox to not print fit results
                 # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
                 # max_c = hc.bin_center[max_loc]  
                 
-                cmin = hc.mean.value - 2.0
-                cmax = hc.mean.value + 2.0
+                cmin = hc.mean.value - self.cut_bounds
+                cmax = hc.mean.value + self.cut_bounds
                 
                 cut = WCUT(cmin,cmax,name='ztar_diff_cut')
                 r = cut(ztar_diff)
@@ -649,12 +718,12 @@ class ztar_cut:
             ztar_diff = self.hms_ztar - self.shms_ztar
             
             hc = B.histo(ztar_diff,range=(-5.,5.),bins=50)
-            hc.fit(plot_fit=False,print_res=False)
+            hc.fit(plot_fit=False)
             # max_loc = np.where(hc.bin_content == max(hc.bin_content))[0]
             # max_c = hc.bin_center[max_loc]  
             
-            self.cut_min = hc.mean.value - 2.0
-            self.cut_max = hc.mean.value + 2.0
+            self.cut_min = hc.mean.value - self.cut_bounds
+            self.cut_max = hc.mean.value + self.cut_bounds
             self.cut = WCUT(self.cut_min,self.cut_max,name='ztar_diff_cut')
             self.res = self.cut(ztar_diff)
         
@@ -668,16 +737,17 @@ class ztar_cut:
             self.cut.stats()
         
     def __repr__(self):
-            return "ztar_diff_cut\n"
+            return f"ztar_diff_cut with bounds +/- {self.cut_bounds}\n"
     
     def report(self, fname=''):
         with open(fname,'a') as f:
-            f.write("ztar_diff_cut\n")
+            f.write(f"ztar_diff_cut with bounds +/- {self.cut_bounds}\n")
         return   
 #%% coincidence time cut - corrects for offset
 
 class CTime_cut:
-    def __init__(self,data_obj,many=False):
+    def __init__(self,data_obj,many=False,cut_bounds=2.0):
+        self.cut_bounds = cut_bounds
         if many:
             self.many = data_obj.many
             
@@ -705,7 +775,7 @@ class CTime_cut:
         
         CTime_histo = B.histo(CTime,range=(x_min,x_max),bins=200,
                                   title = 'CTime no cuts')    
-        CTime_histo.fit(max_c-5,max_c+5,plot_fit=False,print_res=False)
+        CTime_histo.fit(max_c-5,max_c+5,plot_fit=False)
         mu = CTime_histo.mean.value    
         CTime_corr = CTime - mu
         
@@ -726,7 +796,7 @@ class CTime_cut:
             for m in self.many:
                 coinTime_corr = self.get_coinTimeOffset(self.coinTime[m]) 
                 
-                cut = WCUT(-2.,2.,name='epCoinTime_cut')
+                cut = WCUT(-self.cut_bounds,self.cut_bounds,name='epCoinTime_cut')
                 res = cut(coinTime_corr)
                 
                 self.cut[m] = cut
@@ -742,7 +812,7 @@ class CTime_cut:
         else:
             coinTime_corr = self.get_coinTimeOffset(self.coinTime)
             
-            self.cut = WCUT(-2.,2.,name='epCoinTime_cut')
+            self.cut = WCUT(-self.cut_bounds,self.cut_bounds,name='epCoinTime_cut')
             self.res = self.cut(coinTime_corr)
             self.CTime_corr = coinTime_corr
         
@@ -757,11 +827,11 @@ class CTime_cut:
         
         
     def __repr__(self):
-            return 'epCoinTime_cut\n'
+            return f'epCoinTime_cut with bounds +/- {self.cut_bounds}\n'
     
     def report(self, fname=''):
         with open(fname,'a') as f:
-            f.write('epCoinTime_cut\n')
+            f.write(f'epCoinTime_cut with bounds +/- {self.cut_bounds}\n')
         return
 #%% Commonly used cuts are defined here
 
@@ -820,29 +890,647 @@ shms_yptar = WCUT(-0.03,0.03,name='shms_yptar')
 # shms_xptar = WCUT(-0.0125,0.0125,name='shms_xptar')
 # shms_yptar = WCUT(-0.0075,0.0075,name='shms_yptar')
 
+# SHMS Calorimeter PID: cut on P.cal.etottracknorm
 shms_calPID = WCUT(0.7,1.3,name='shms_calPID')
-
-acceptance_cuts = [hms_delta,shms_delta,hms_xptar,hms_yptar,shms_xptar,shms_yptar] 
+## SYSTEMATIC STUDIES: shms_calPID (0.8,1.2)
+shms_calPID_A = WCUT(0.8,1.2,name='shms_calPID')
+## SYSTEMATIC STUDIES: shms_calPID (0.9,1.1)
+shms_calPID_B = WCUT(0.9,1.1,name='shms_calPID')
+## SYSTEMATIC STUDIES: shms_calPID (0.95,1.05)
+shms_calPID_C = WCUT(0.95,1.05,name='shms_calPID')
     
 ## Event Selection Cuts
 # Coinidence Time cut
 # ct_cut = WCUT(xmin=-2.,xmax=2.,name='epCoinTime')
 # Missing Energy
 Em_cut = WCUT(-0.05,0.05,name='Em_cut')
+## SYSTEMATIC STUDIES: Em (-0.08,0.08)
+Em_cut_A = WCUT(-0.08,0.08,name='Em_cut')
+## SYSTEMATIC STUDIES: Em (-0.07,0.07)
+Em_cut_B = WCUT(-0.07,0.07,name='Em_cut')
+## SYSTEMATIC STUDIES: Em (-0.06,0.06)
+Em_cut_C = WCUT(-0.06,0.06,name='Em_cut')
+## SYSTEMATIC STUDIES: Em (-0.04,0.04)
+Em_cut_D = WCUT(-0.04,0.04,name='Em_cut')
+## SYSTEMATIC STUDIES: Em (-0.03,0.03)
+Em_cut_E = WCUT(-0.03,0.03,name='Em_cut')
+# Missing Energy cut for hydrogen elastics
 Em_cut_hc = WCUT(-0.01,0.01,name='Em_cut_hc')
-# z-target difference
-# Ztar_diff = WCUT()
 # Momentum Transfer Squared
+# Q2_cut = WCUT(4.0,np.inf,name='Q2_cut')
 Q2_cut = WCUT(4.0,5.0,name='Q2_cut')
 # xBj cut for heep
-xbj_cut = WCUT(0.95,1.05,name='xbj_cut')
+xbj_cut = WCUT(1.0,np.inf,name='xbj_cut')
 # invariant mass (W) cut for heep
-W_cut = WCUT(0.938,0.954,name='W_cut')
+W_cut = WCUT(0.85,1.05,name='W_cut')
+# HMS Collimator Cut Scale
+HCOLL_scale = 1.0
+# Ztar difference range around mean value
+ZT_CUT_BOUND = 2.0
+# ep Coin Time bounds around corrected ep Coin Time peak
+CT_CUT_BOUND = 2.0
 
-event_selection_cuts = [hms_delta,shms_delta,shms_calPID,Em_cut,Q2_cut]
+# SELECT STD CUTS HERE
+cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: shms_calPID (0.8,1.2)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,shms_calPID_A,noEDTM]
+## SYSTEMATIC STUDIES: shms_calPID (0.9,1.1)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,shms_calPID_B,noEDTM]
+## SYSTEMATIC STUDIES: shms_calPID (0.95,1.05)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,shms_calPID_C,noEDTM]
+## SYSTEMATIC STUDIES: shms_calPID - OFF
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,noEDTM]
+## SYSTEMATIC STUDIES: Em (-0.08,0.08)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut_A,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut_A,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: Em (-0.07,0.07)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut_B,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut_B,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: Em (-0.06,0.06)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut_C,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut_C,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: Em (-0.04,0.04)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut_D,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut_D,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: Em (-0.03,0.03)
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut_E,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut_E,Q2_cut,shms_calPID,noEDTM]
+## SYSTEMATIC STUDIES: noEDTM - OFF
+# cuts_list_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# cuts_list_DATA = [hms_delta,shms_delta,Em_cut,Q2_cut,shms_calPID]
 
-heep_event_selection_cuts = [hms_delta,shms_delta,Em_cut_hc,shms_calPID]
+# event_selection_cuts = [hms_delta,shms_delta,shms_calPID,Em_cut,Q2_cut]
 
-event_selection_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+# heep_event_selection_cuts = [hms_delta,shms_delta,Em_cut_hc,shms_calPID]
 
-heep_event_selection_SIMC = [hms_delta,shms_delta,Em_cut_hc]
+# event_selection_SIMC = [hms_delta,shms_delta,Em_cut,Q2_cut]
+
+# heep_event_selection_SIMC = [hms_delta,shms_delta,Em_cut_hc]
+
+# acceptance_cuts = [hms_delta,shms_delta,hms_xptar,hms_yptar,shms_xptar,shms_yptar] 
+
+#%% function apply_evt_sel_cuts
+rtd = 180/np.pi
+
+###
+# made a function that applies the event selection cuts and stores the variables
+# with cuts back into the orginal data object
+###
+
+def apply_evt_sel_cuts(data_obj,is_SIMC=False,show_stats = False,save_report='',
+                       STD=True, HCOLL=True, PCOLL=True, CURR=True, ZT=True, CT=True,
+                       calc_avg_kin=False, plot_cuts=False):
+    if is_SIMC:
+        cuts_applied_list = []
+        if STD:
+            cuts_applied_list = cuts_list_SIMC.copy()
+        
+        if HCOLL:
+            hcoll_cut = coll_cut(data_obj,spec='HMS',is_SIMC=True,
+                                 scale=HCOLL_scale)
+            hcoll_cut_arrays = hcoll_cut()
+            cuts_applied_list.append(hcoll_cut)
+        if PCOLL:
+            pcoll_cut = coll_cut(data_obj,spec='SHMS',is_SIMC=True)
+            pcoll_cut_arrays = pcoll_cut()
+            cuts_applied_list.append(pcoll_cut)
+        if ZT:
+            zt_cut = ztar_cut(data_obj,is_SIMC=True,cut_bounds=ZT_CUT_BOUND)
+            zt_cut_arrays = zt_cut()
+            cuts_applied_list.append(zt_cut)
+        
+        if STD:
+            cuts_to_apply_list = []
+            for cut in cuts_list_SIMC:
+                br = data_obj.Branches[SIMC_names[cut.name]]
+                cut_array = cut(br)
+                # cut.stats()
+                
+                cuts_to_apply_list.append(cut_array)
+                
+        # add special cut arrays to clist
+        if HCOLL: cuts_to_apply_list.append(hcoll_cut_arrays)
+        if PCOLL: cuts_to_apply_list.append(pcoll_cut_arrays)
+        if ZT: cuts_to_apply_list.append(zt_cut_arrays)
+        
+        all_cuts_sim = cuts_to_apply_list[0]
+        for arr in cuts_to_apply_list:    
+            all_cuts_sim = all_cuts_sim & arr 
+            
+        Pm_cut = data_obj.Branches['Pm'][all_cuts_sim]
+        Th_rq_cut = data_obj.Branches['theta_rq'][all_cuts_sim]*rtd
+        em_cut = data_obj.Branches['Em'][all_cuts_sim]
+        WEIGHTS_cut = D.calc_weights(data_obj.Branches)[all_cuts_sim]
+        WEIGHTS_PS_cut = D.calc_weights_PS(data_obj.Branches)[all_cuts_sim]        
+
+        data_obj.Branches.update({'Pm_cut':Pm_cut,
+                                       'theta_rq_cut':Th_rq_cut,
+                                       'Em_cut':em_cut,
+                                       'WEIGHTS_cut':WEIGHTS_cut,
+                                       'WEIGHTS_PS_cut':WEIGHTS_PS_cut})
+        print('SIMC data object updated with the branches:',
+              'Pm_cut, theta_rq_cut, Em_cut\n',
+              'WEIGHTS_cut, WEIGHTS_PS_cut\n')
+        print('Applied the following cuts:\n',
+              [c for c in cuts_applied_list])
+        
+        if calc_avg_kin:
+            Ein_v_cut = data_obj.Branches['Ein_v_GeV'][all_cuts_sim]
+            kf_v_cut = data_obj.Branches['kf_v'][all_cuts_sim]
+            the_v_cut = data_obj.Branches['the_v'][all_cuts_sim]
+            Pf_v_cut = data_obj.Branches['pf_v_GeV'][all_cuts_sim]
+            thp_v_cut = data_obj.Branches['thp_v'][all_cuts_sim]
+            q_v_cut = data_obj.Branches['q_lab_v_GeV'][all_cuts_sim]
+            q_v_calc_cut = data_obj.Branches['q_v_calc'][all_cuts_sim]
+            thq_v_cut = data_obj.Branches['thq_v'][all_cuts_sim]
+            Q2_v_cut = data_obj.Branches['Q2_v_GeV2'][all_cuts_sim]
+            omega_v_cut = data_obj.Branches['nu_v_GeV'][all_cuts_sim]
+            xbj_v_cut = data_obj.Branches['xbj_v'][all_cuts_sim]
+            pm_v_cut = data_obj.Branches['pm_v_GeV'][all_cuts_sim]
+            pm_v_calc_cut = data_obj.Branches['pm_v_calc'][all_cuts_sim]
+            thpq_v_cut = data_obj.Branches['th_pq_v'][all_cuts_sim]
+            thnq_v_cut = data_obj.Branches['th_nq_v'][all_cuts_sim]
+            phpq_v_cut = data_obj.Branches['ph_pq_v'][all_cuts_sim]
+            phnq_v_cut = data_obj.Branches['ph_nq_v'][all_cuts_sim]
+            sig_cut = data_obj.Branches['sig'][all_cuts_sim]
+            sphpq_calc_cut = data_obj.Branches['sph_pq_calc'][all_cuts_sim]
+            cphpq_calc_cut = data_obj.Branches['cph_pq_calc'][all_cuts_sim]
+            
+            kin = {'Ein_v_cut':Ein_v_cut,
+                   'kf_v_cut':kf_v_cut,
+                   'the_v_cut':the_v_cut,
+                   'pf_v_cut':Pf_v_cut,
+                   'thp_v_cut':thp_v_cut,
+                   'q_v_cut':q_v_cut,
+                   'q_v_calc_cut':q_v_calc_cut,
+                   'thq_v_cut':thq_v_cut,
+                   'Q2_v_cut':Q2_v_cut,
+                   'omega_v_cut':omega_v_cut,
+                   'xbj_v_cut':xbj_v_cut,
+                   'pm_v_cut':pm_v_cut,
+                   'pm_v_calc_cut':pm_v_calc_cut,
+                   'th_pq_v_cut':thpq_v_cut,
+                   'th_nq_v_cut':thnq_v_cut,
+                   'ph_pq_v_cut':phpq_v_cut,
+                   'ph_nq_v_cut':phnq_v_cut,
+                   'sig_cut':sig_cut,
+                   'sphpq_cut':sphpq_calc_cut,
+                   'cphpq_cut':cphpq_calc_cut
+                    }
+            
+            data_obj.Branches.update(kin)
+            print('SIMC data object updated with the branches:',
+                      kin.keys(),'\n')
+        
+        if show_stats:
+            print('Cuts STATS:\n',
+                  [c.stats() for c in cuts_applied_list])
+        if save_report:
+            filename = save_report + '/Cut_Report_SIMC.txt'
+            with open(filename,'w') as f:
+                f.write('CUTS REPORT\n')
+            a = [c.report(filename) for c in cuts_applied_list]
+        
+        if plot_cuts:
+            #Make relevant directories to store plots
+            dir_name = save_report + '/cuts_plots_SIMC/'
+
+            #check if directory exists, else creates it.
+            if not os.path.exists(dir_name):
+                os.makedirs(dir_name)
+                
+            m = data_obj.many[0]    
+            if STD:
+                hd = data_obj.Branches[SIMC_names[hms_delta.name]]
+                pd = data_obj.Branches[SIMC_names[shms_delta.name]]
+                em = data_obj.Branches[SIMC_names[Em_cut.name]]
+                q2 = data_obj.Branches[SIMC_names[Q2_cut.name]]
+                
+                h1 = B.histo(hd, range=(-15,15), bins=100)
+                h2 = B.histo(pd, range=(-15,25), bins=100)
+                h4 = B.histo(em, range=(-0.1,1.), bins=100)
+                h5 = B.histo(q2, range=(2,7), bins=100)
+                
+                B.pl.figure()
+                h1.plot()
+                ylo,yhi = B.pl.ylim()
+                B.pl.vlines([hms_delta.xmin,hms_delta.xmax],ylo,yhi,linestyles='--',color='r')
+                B.pl.title('HMS delta [%]')
+                B.pl.ylabel('')
+                B.pl.xlabel('')
+                B.pl.savefig(dir_name+'hms_delta_cut.png')
+                
+                B.pl.figure()
+                h2.plot()
+                ylo,yhi = B.pl.ylim()
+                B.pl.vlines([shms_delta.xmin,shms_delta.xmax],ylo,yhi,linestyles='--',color='r')
+                B.pl.title('SHMS delta [%]')
+                B.pl.ylabel('')
+                B.pl.xlabel('')
+                B.pl.savefig(dir_name+'shms_delta_cut.png')
+                
+                B.pl.figure()
+                h4.plot()
+                ylo,yhi = B.pl.ylim()
+                B.pl.vlines([Em_cut.xmin,Em_cut.xmax],ylo,yhi,linestyles='--',color='r')
+                B.pl.title('Nuclear Missing Energy [GeV]')
+                B.pl.ylabel('')
+                B.pl.xlabel('')
+                B.pl.savefig(dir_name+'Em_cut.png')
+                
+                B.pl.figure()
+                h5.plot()
+                ylo,yhi = B.pl.ylim()
+                B.pl.vlines([Q2_cut.xmin,Q2_cut.xmax],ylo,yhi,linestyles='--',color='r')
+                B.pl.title('$Q^2$ [$GeV^2$]')
+                B.pl.ylabel('')
+                B.pl.xlabel('')
+                B.pl.savefig(dir_name+'Q2_cut.png')
+            
+            if HCOLL:
+                h_xcoll_ycoll = B.histo2d(hcoll_cut.ycoll,hcoll_cut.xcoll,range=[(-15,15),(-15,15)],bins=100)
+                
+                B.pl.figure()
+                h_xcoll_ycoll.plot(colormap=cmp['viridis'])
+                B.pl.plot(hcoll_cut.hcoll_lim[:,0],hcoll_cut.hcoll_lim[:,1],color='r')
+                B.pl.xlabel('$Y_{coll}$')
+                B.pl.ylabel('$X_{coll}$')
+                B.pl.title('HMS Collimator')
+                B.pl.savefig(dir_name+'hms_collimator_cut.png')
+                
+            if PCOLL:
+                h_xcoll_ycoll = B.histo2d(pcoll_cut.ycoll,pcoll_cut.xcoll,range=[(-15,15),(-15,15)],bins=100)
+                
+                B.pl.figure()
+                h_xcoll_ycoll.plot(colormap=cmp['viridis'])
+                B.pl.plot(pcoll_cut.hcoll_lim[:,0],pcoll_cut.hcoll_lim[:,1],color='r')
+                B.pl.xlabel('$Y_{coll}$')
+                B.pl.ylabel('$X_{coll}$')
+                B.pl.title('SHMS Collimator')
+                B.pl.savefig(dir_name+'shms_collimator_cut.png')
+            
+            if ZT:
+                ztar_diff = zt_cut.hms_ztar - zt_cut.shms_ztar
+                h_zt = B.histo(ztar_diff,range=(-5,5),bins=100)
+                
+                B.pl.figure()
+                h_zt.plot()
+                ylo,yhi = B.pl.ylim()
+                B.pl.vlines([zt_cut.cut_min,zt_cut.cut_max],ylo,yhi,linestyles='--',color='r')
+                B.pl.title('$Z_{tar}$ Difference = HMS $Z_{tar}$ - SHMS $Z_{tar}$')
+                B.pl.ylabel('')
+                B.pl.xlabel('')
+                B.pl.savefig(dir_name+'ztar_cut.png')
+
+    else:
+        try:
+            Pm = {}
+            Th_rq = {}
+            Em = {}
+
+            for m in data_obj.many:
+                Pm[m] = data_obj.Branches[m]['H.kin.secondary.pmiss']
+                Th_rq[m] = data_obj.Branches[m]['H.kin.secondary.th_bq']*rtd
+                Em[m] = data_obj.Branches[m]['H.kin.secondary.emiss_nuc']    
+
+            ## making the cut lists
+            cuts_applied_list = []
+            # first select the cuts to apply, defined already in cut_handler
+            
+            if STD:
+                cuts_applied_list = cuts_list_DATA.copy()
+            
+            # initialize special cut classes: coll_cut, current_cut, ztar_cut,
+            # CTime_cut 
+            if HCOLL:
+                hcoll_cut = coll_cut(data_obj,spec='HMS',many=True,
+                                     scale=HCOLL_scale)
+                hcoll_cut_arrays = hcoll_cut()
+                cuts_applied_list.append(hcoll_cut)
+            
+            if PCOLL:
+                pcoll_cut = coll_cut(data_obj,spec='SHMS',many=True)
+                pcoll_cut_arrays = pcoll_cut()
+                cuts_applied_list.append(pcoll_cut)
+            
+            if CURR:
+                curr_cut = current_cut(data_obj,current='BCM1',many=True)
+                curr_cut_arrays = curr_cut()
+                cuts_applied_list.append(curr_cut)
+                       
+            if ZT:
+                zt_cut = ztar_cut(data_obj,many=True,cut_bounds=ZT_CUT_BOUND)
+                zt_cut_arrays = zt_cut()
+                cuts_applied_list.append(zt_cut)
+            
+            if CT:
+                ct_cut = CTime_cut(data_obj,many=True,cut_bounds=CT_CUT_BOUND)
+                ct_cut_arrays = ct_cut() 
+                cuts_applied_list.append(ct_cut)
+                
+            #then make the cut arrays by getting the desired array from the DATA_INIT 
+            # object and print stats for said cut, the result is a list of boolean arrays
+            # for each cut, e.g. a Q2 cut will make a cut on the 'P.kin.primary.Q2' 
+            # variable and the result will be a boolean array
+            # note you will have a list of boolean arrays PER RUN, this is necessary to 
+            # preserve the length of the arrays, since each run has a different # of array
+            # elements.
+
+            cuts_to_apply = {}
+            for m in data_obj.many:
+                
+                if STD:
+                    clist = []
+                    for cut in cuts_list_DATA:
+                        br = data_obj.Branches[m][HCANA_names[cut.name]]
+                        cut_array = cut(br)
+                        # cut.stats()
+                        
+                        clist.append(cut_array)
+                
+                # add special cut arrays to clist
+                if HCOLL: {clist.append(hcoll_cut_arrays[m])}
+                if PCOLL: {clist.append(pcoll_cut_arrays[m])}
+                if CURR: {clist.append(curr_cut_arrays[m])}
+                if ZT: {clist.append(zt_cut_arrays[m])}
+                if CT: {clist.append(ct_cut_arrays[m])}
+                
+                # each run has a clist
+                cuts_to_apply[m] = clist
+
+            # to apply multiple cuts efficiently I combine all boolean arrays into one
+            # again there will be a total array for each run to preserve array length
+            # WARNING: if you try to make a cut by array slicing 
+            #  e.g. cut_arr = arr[bool_arr] 
+            # you will get a complaint if the boolean array is of a different size than 
+            # the original array
+
+            all_cuts = {}
+            for m in data_obj.many:
+                all_cuts[m] = cuts_to_apply[m][0]
+                for arr in cuts_to_apply[m]:    
+                    all_cuts[m] = all_cuts[m] & arr  
+
+            # now apply the cuts and store the cut arrays back in the DATA_INIT obj
+            for m in data_obj.many:
+                Pm_cut = Pm[m][all_cuts[m]]
+                Th_rq_cut = Th_rq[m][all_cuts[m]]
+                em_cut = Em[m][all_cuts[m]]
+                
+                data_obj.Branches[m].update({'H.kin.secondary.pmiss_cut':Pm_cut,
+                                               'H.kin.secondary.th_bq_cut':Th_rq_cut,
+                                               'H.kin.secondary.emiss_nuc_cut':em_cut})
+            
+            print('Data object updated with the branches:\n',
+                  'H.kin.secondary.pmiss_cut, H.kin.secondary.th_bq_cut,',
+                  'H.kin.secondary.emiss_nuc_cut\n')
+            print('Applied the following cuts:\n',
+                  [c for c in cuts_applied_list])
+            
+            if show_stats:
+                print('Cuts STATS:\n',
+                      [c.stats() for c in cuts_applied_list])
+            if save_report:
+                filename = save_report + '/Cut_Report_DATA.txt'
+                with open(filename,'w') as f:
+                    f.write('CUTS REPORT\n')
+                a = [c.report(filename) for c in cuts_applied_list]
+            if plot_cuts:
+                #Make relevant directories to store plots
+                dir_name = save_report + '/cuts_plots_DATA/'
+
+                #check if directory exists, else creates it.
+                if not os.path.exists(dir_name):
+                    os.makedirs(dir_name)
+                    
+                m = data_obj.many[0]    
+                if STD:
+                    hd = data_obj.Branches[m][HCANA_names[hms_delta.name]]
+                    pd = data_obj.Branches[m][HCANA_names[shms_delta.name]]
+                    pcal = data_obj.Branches[m][HCANA_names[shms_calPID.name]]
+                    em = data_obj.Branches[m][HCANA_names[Em_cut.name]]
+                    q2 = data_obj.Branches[m][HCANA_names[Q2_cut.name]]
+                    edtm = data_obj.Branches[m][HCANA_names[noEDTM.name]]
+                    
+                    h1 = B.histo(hd, range=(-15,15), bins=100)
+                    h2 = B.histo(pd, range=(-15,25), bins=100)
+                    h3 = B.histo(pcal, range=(0,2), bins=100)
+                    h4 = B.histo(em, range=(-0.1,1.), bins=100)
+                    h5 = B.histo(q2, range=(2,7), bins=100)
+                    h6 = B.histo(edtm, range=(-0.1,1), bins=100)
+                    
+                    B.pl.figure()
+                    h1.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([hms_delta.xmin,hms_delta.xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('HMS delta [%]')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'hms_delta_cut.png')
+                    
+                    B.pl.figure()
+                    h2.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([shms_delta.xmin,shms_delta.xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('SHMS delta [%]')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'shms_delta_cut.png')
+                    
+                    B.pl.figure()
+                    h3.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([shms_calPID.xmin,shms_calPID.xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('SHMS caletottracknorm')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'shms_calPID_cut.png')
+                    
+                    B.pl.figure()
+                    h4.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([Em_cut.xmin,Em_cut.xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('Nuclear Missing Energy [GeV]')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'Em_cut.png')
+                    
+                    B.pl.figure()
+                    h5.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([Q2_cut.xmin,Q2_cut.xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('$Q^2$ [$GeV^2$]')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'Q2_cut.png')
+                    
+                    B.pl.figure()
+                    h6.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([noEDTM.value],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('EDTM TDC Signal')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'noEDTM_cut.png')
+                
+                if HCOLL:
+                    h_xcoll_ycoll = B.histo2d(hcoll_cut.ycoll[m],hcoll_cut.xcoll[m],range=[(-15,15),(-15,15)],bins=100)
+                    
+                    B.pl.figure()
+                    h_xcoll_ycoll.plot(colormap=cmp['viridis'])
+                    B.pl.plot(hcoll_cut.hcoll_lim[:,0],hcoll_cut.hcoll_lim[:,1],color='r')
+                    B.pl.xlabel('$Y_{coll}$')
+                    B.pl.ylabel('$X_{coll}$')
+                    B.pl.title('HMS Collimator')
+                    B.pl.savefig(dir_name+'hms_collimator_cut.png')
+                    
+                if PCOLL:
+                    h_xcoll_ycoll = B.histo2d(pcoll_cut.ycoll[m],pcoll_cut.xcoll[m],range=[(-15,15),(-15,15)],bins=100)
+                    
+                    B.pl.figure()
+                    h_xcoll_ycoll.plot(colormap=cmp['viridis'])
+                    B.pl.plot(pcoll_cut.hcoll_lim[:,0],pcoll_cut.hcoll_lim[:,1],color='r')
+                    B.pl.xlabel('$Y_{coll}$')
+                    B.pl.ylabel('$X_{coll}$')
+                    B.pl.title('SHMS Collimator')
+                    B.pl.savefig(dir_name+'shms_collimator_cut.png')
+                 
+                if CURR:
+                    h_curr = B.histo(curr_cut.current[m], range=(0,70),bins=100)
+                    
+                    B.pl.figure()
+                    h_curr.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([curr_cut.c_cut_min[m],curr_cut.c_cut_max[m]],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title(f'{curr_cut.cut_name} Current')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'current_cut.png')
+                
+                if ZT:
+                    ztar_diff = zt_cut.hms_ztar[m] - zt_cut.shms_ztar[m]
+                    h_zt = B.histo(ztar_diff,range=(-5,5),bins=100)
+                    
+                    B.pl.figure()
+                    h_zt.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([zt_cut.cut_min[m],zt_cut.cut_max[m]],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('$Z_{tar}$ Difference = HMS $Z_{tar}$ - SHMS $Z_{tar}$')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'ztar_cut.png')
+                
+                if CT:
+                    h_ct = B.histo(ct_cut.CTime_corr[m], range=(-5,5), bins=100)
+                    
+                    B.pl.figure()
+                    h_ct.plot()
+                    ylo,yhi = B.pl.ylim()
+                    B.pl.vlines([ct_cut.cut[m].xmin,ct_cut.cut[m].xmax],ylo,yhi,linestyles='--',color='r')
+                    B.pl.title('Coincidence Time')
+                    B.pl.ylabel('')
+                    B.pl.xlabel('')
+                    B.pl.savefig(dir_name+'coinTime_cut.png')
+                
+                    
+        except TypeError:
+            
+            Pm = data_obj.Branches['H.kin.secondary.pmiss']
+            Th_rq = data_obj.Branches['H.kin.secondary.th_bq']*rtd
+            Em = data_obj.Branches['H.kin.secondary.emiss_nuc']    
+
+            ## making the cut lists
+            cuts_applied_list = []
+            # first select the cuts to apply, defined already in cut_handler
+            if STD:
+                cuts_list = [hms_delta, shms_delta, shms_calPID, 
+                             Em_cut, Q2_cut, noEDTM]
+                
+                cuts_applied_list = cuts_list.copy()
+            
+            # initialize special cut classes: coll_cut, current_cut, ztar_cut,
+            # CTime_cut 
+            if HCOLL:
+                hcoll_cut = coll_cut(data_obj,spec='HMS')
+                hcoll_cut_arrays = hcoll_cut()
+                cuts_applied_list.append(hcoll_cut)
+            if PCOLL:
+                pcoll_cut = coll_cut(data_obj,spec='SHMS')
+                pcoll_cut_arrays = pcoll_cut()
+                cuts_applied_list.append(pcoll_cut)
+            if CURR:
+                curr_cut = current_cut(data_obj,current='BCM4A')
+                curr_cut_arrays = curr_cut()
+                cuts_applied_list.append(curr_cut)
+            if ZT:
+                zt_cut = ztar_cut(data_obj)
+                zt_cut_arrays = zt_cut()
+                cuts_applied_list.append(zt_cut)
+            if CT:
+                ct_cut = CTime_cut(data_obj)
+                ct_cut_arrays = ct_cut() 
+                cuts_applied_list.append(ct_cut)
+             
+            #then make the cut arrays by getting the desired array from the DATA_INIT 
+            # object and print stats for said cut, the result is a list of boolean arrays
+            # for each cut, e.g. a Q2 cut will make a cut on the 'P.kin.primary.Q2' 
+            # variable and the result will be a boolean array
+            # note you will have a list of boolean arrays PER RUN, this is necessary to 
+            # preserve the length of the arrays, since each run has a different # of array
+            # elements.
+            if STD:
+                cuts_to_apply_list = []
+                for cut in cuts_list:
+                    br = data_obj.Branches[HCANA_names[cut.name]]
+                    cut_array = cut(br)
+                    # cut.stats()
+                    
+                    cuts_to_apply_list.append(cut_array)
+                
+            # add special cut arrays to cuts_to_apply_list
+            if HCOLL: cuts_to_apply_list.append(hcoll_cut_arrays)
+            if PCOLL: cuts_to_apply_list.append(pcoll_cut_arrays)
+            if CURR: cuts_to_apply_list.append(curr_cut_arrays)
+            if ZT: cuts_to_apply_list.append(zt_cut_arrays)
+            if CT: cuts_to_apply_list.append(ct_cut_arrays)
+                
+            # to apply multiple cuts efficiently I combine all boolean arrays into one
+            # again there will be a total array for each run to preserve array length
+            # WARNING: if you try to make a cut by array slicing 
+            #  e.g. cut_arr = arr[bool_arr] 
+            # you will get a complaint if the boolean array is of a different size than 
+            # the original array
+
+            all_cuts = cuts_to_apply_list[0]
+            for arr in cuts_to_apply_list:    
+                all_cuts = all_cuts & arr  
+
+            # now apply the cuts and store the cut arrays back in the DATA_INIT obj
+  
+            Pm_cut = Pm[all_cuts]
+            Th_rq_cut = Th_rq[all_cuts]
+            em_cut = Em[all_cuts]
+            
+            data_obj.Branches[m].update({'H.kin.secondary.pmiss_cut':Pm_cut,
+                                           'H.kin.secondary.th_bq_cut':Th_rq_cut,
+                                           'H.kin.secondary.emiss_nuc_cut':em_cut})
+        
+            print('Data object updated with the branches:\n',
+                  'H.kin.secondary.pmiss_cut, H.kin.secondary.th_bq_cut,',
+                  'H.kin.secondary.emiss_nuc_cut\n')
+            print('Applied the following cuts:\n',
+                  [c for c in cuts_applied_list])
+            
+            if show_stats:
+                print('Cuts STATS:\n',
+                      [c.stats() for c in cuts_applied_list])
+            if save_report:
+                filename = 'yield_n_xsec/current_cuts_DATA.txt'
+                with open(filename,'w') as f:
+                    f.write('CUTS REPORT\n')
+                a = [c.report(filename) for c in cuts_applied_list] 

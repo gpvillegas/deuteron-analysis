@@ -1,0 +1,6 @@
+# Normalization Systematics Summary
+#This file contains the weighted averages of each normalization factor 
+#per mising momentum setting per run set.
+#
+#header line:
+#! Pm[s,0]/ set[s,1]/ tgtBoil[f,2]/ dtgtBoil[f,3]/ pTr[f,4]/ dpTr[f,5]/ pTrk[f,6]/ dpTrk[f,7]/ hTrk[f,8]/ dhTrk[f,9]/ tLT[f,10]/ dtLT[f,11]/ Qtot[f,12]/ dQtot[f,13]/
